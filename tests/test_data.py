@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from ah_pairs_trading.config import DataConfig, PipelineConfig
 from ah_pairs_trading.data import build_ah_price_frame, load_ah_pair_data, prepare_signal_frame, standardize_history_frame
@@ -118,3 +119,28 @@ def test_load_ah_pair_data_reuses_cached_remote_history(tmp_path, monkeypatch) -
     assert fetch_calls == {"a": 1, "h": 1}
     pd.testing.assert_frame_equal(first.aligned_prices, second.aligned_prices)
     pd.testing.assert_frame_equal(first.model_prices, second.model_prices)
+
+
+def test_load_ah_pair_data_missing_local_history_reports_recovery_hint(tmp_path) -> None:
+    """Missing local CSV paths should explain how to switch back to automatic loading."""
+
+    config = PipelineConfig(
+        a_symbol="600036",
+        h_symbol="03968",
+        start_date="2024-01-02",
+        end_date="2024-01-10",
+        train_end_date="2024-01-08",
+        data=DataConfig(
+            a_csv_path=tmp_path / "missing_a.csv",
+            constant_fx_rate=0.91,
+        ),
+        cache_dir=tmp_path / "cache",
+    )
+
+    with pytest.raises(FileNotFoundError) as exc_info:
+        load_ah_pair_data(config)
+
+    message = str(exc_info.value)
+    assert "--a-csv" in message
+    assert "AkShare" in message
+    assert "cache" in message

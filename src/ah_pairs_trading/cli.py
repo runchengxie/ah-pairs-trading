@@ -28,14 +28,29 @@ def build_parser() -> argparse.ArgumentParser:
         default="2022-12-31",
         help="The last date included in the training sample.",
     )
-    parser.add_argument("--a-csv", type=Path, default=None, help="Optional local CSV for the A-share history.")
-    parser.add_argument("--h-csv", type=Path, default=None, help="Optional local CSV for the H-share history.")
-    parser.add_argument("--fx-csv", type=Path, default=None, help="Optional local CSV for the HKD/CNY history.")
+    parser.add_argument(
+        "--a-csv",
+        type=Path,
+        default=None,
+        help="Optional user-supplied local CSV for the A-share history. When set, this exact file is used.",
+    )
+    parser.add_argument(
+        "--h-csv",
+        type=Path,
+        default=None,
+        help="Optional user-supplied local CSV for the H-share history. When set, this exact file is used.",
+    )
+    parser.add_argument(
+        "--fx-csv",
+        type=Path,
+        default=None,
+        help="Optional user-supplied local CSV for the HKD/CNY history. When set, this exact file is used.",
+    )
     parser.add_argument(
         "--benchmark-csv",
         type=Path,
         default=None,
-        help="Optional local CSV for the benchmark history.",
+        help="Optional user-supplied local CSV for the benchmark history. When set, this exact file is used.",
     )
     parser.add_argument(
         "--constant-fx-rate",
@@ -131,7 +146,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--resume-from-cache",
         action="store_true",
-        help="Reuse cached pipeline stages so interrupted runs can continue from completed checkpoints.",
+        help="Reuse cached pipeline stages so interrupted runs can continue from completed checkpoints without bypassing validation checks.",
     )
     parser.add_argument(
         "--output-dir",

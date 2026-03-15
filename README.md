@@ -2,14 +2,62 @@
 
 这个仓库已经从原来的美股双边配对 demo，改成了更贴近大陆居民账户约束的 **A/H 相对价值研究框架**。
 
-核心假设不再是 textbook 式的市场中性，而是：
+主流程现在是：
 
-- 先把同一家公司 A 股和 H 股价格统一到人民币口径
-- 用训练期协整回归估计截距和 hedge ratio
+- 自动拉取同一发行人的 A 股和 H 股历史
+- 把 H 股价格转换到人民币口径
+- 在训练期估计协整关系、截距和 hedge ratio
 - 对残差做滚动标准化，生成 z-score
 - 默认执行 `long_cheaper_leg_only`
-- 只有显式切到 `paired` 时，才做双腿同时持仓
-- 回测里显式计入 lot size、最大持有期和交易成本假设
+- 只有显式切到 `paired` 时，才双腿同时持仓
+- 回测里显式计入 lot size、最大持有期和交易成本
+
+## 先看推荐用法
+
+如果你只是想先把流程跑通，推荐直接用安装后的 CLI：
+
+```bash
+pairs-trading \
+  --a-symbol 601857 \
+  --h-symbol 00857 \
+  --constant-fx-rate 0.92 \
+  --allow-non-coint \
+  --output-dir outputs/petrochina_ah
+```
+
+这条命令的含义是：
+
+- A/H 历史由 AkShare 在线拉取
+- A/H 历史会自动写入并复用 `.cache/ah_pairs_trading`
+- FX 不在线拉取，所以这里临时用 `--constant-fx-rate 0.92`
+- 即使训练集协整不显著，也继续跑完整条 pipeline
+- 没有显式传 `--execution-mode` 时，默认是 `long_cheaper_leg_only`
+
+如果你要跑双腿配对版本，必须显式加上：
+
+```bash
+--execution-mode paired
+```
+
+也就是：
+
+```bash
+pairs-trading \
+  --a-symbol 601857 \
+  --h-symbol 00857 \
+  --constant-fx-rate 0.92 \
+  --execution-mode paired \
+  --allow-non-coint \
+  --output-dir outputs/petrochina_ah
+```
+
+如果你还没做 `pip install -e ".[dev]"`，也可以继续用：
+
+```bash
+python main.py ...
+```
+
+它和 `pairs-trading ...` 走的是同一套 CLI。
 
 ## 当前能力
 
@@ -22,7 +70,7 @@
 - `pipeline.py`
   用训练集估计参数，在全样本上生成滚动 z-score，再分别输出训练集和测试集结果。
 - `cli.py`
-  提供 A/H、FX、成本和执行模式参数。
+  提供 A/H、FX、成本、缓存和执行模式参数。
 
 ## 安装
 
@@ -38,34 +86,132 @@ pip install -e ".[dev]"
 uv sync
 ```
 
-## 数据输入
+## 快速开始
 
-项目支持两种方式：
-
-1. 直接传本地 CSV
-2. 通过 AkShare 拉 A 股和 H 股，再额外提供 FX 序列
-
-注意：
-
-- A/H 价差研究必须有 **HKD/CNY** 序列，不能把 H 股港币价直接拿来和 A 股比较。
-- 如果你没有单独的 FX 历史，可以临时用 `--constant-fx-rate` 做原型，但这只适合快速验证代码，不适合正式回测。
-- CLI 默认会使用 `.cache/ah_pairs_trading` 做本地缓存。
-  如果显式传了 `--a-csv` / `--h-csv` / `--fx-csv`，优先读本地文件；否则会先查缓存，再决定是否在线拉取。
-  如果你希望中途中断后继续复用已经完成的计算阶段，可以加 `--resume-from-cache`。
-
-CSV 只要能识别日期列和收盘价列即可；英文列如 `date` / `close`，或常见中文列如 `日期` / `收盘` 都支持。
-
-## 运行方式
-
-### 用本地 CSV
+### 1. 默认推荐入口：联网拉 A/H，FX 用常数
 
 ```bash
-python main.py \
+pairs-trading \
+  --a-symbol 601857 \
+  --h-symbol 00857 \
+  --constant-fx-rate 0.92 \
+  --allow-non-coint \
+  --output-dir outputs/petrochina_ah
+```
+
+适合第一次确认环境、缓存和输出目录都正常。
+
+### 2. 需要双腿同时持仓时，再显式切到 `paired`
+
+```bash
+pairs-trading \
+  --a-symbol 601857 \
+  --h-symbol 00857 \
+  --constant-fx-rate 0.92 \
+  --execution-mode paired \
+  --z-grid 1.0,1.5,2.0 \
+  --allow-non-coint \
+  --output-dir outputs/petrochina_ah
+```
+
+如果你漏掉 `--execution-mode paired`，最终摘要里会显示：
+
+```text
+Execution mode: long_cheaper_leg_only
+```
+
+这是默认行为，不是程序偷偷改了你的策略。
+
+### 3. 做严格筛选时，再去掉 `--allow-non-coint`
+
+默认 guardrail 是开启的，也就是：
+
+- 训练集协整显著，继续跑
+- 训练集协整不显著，直接中止
+
+所以当你看到下面这种报错时：
+
+```text
+Training-sample cointegration is not significant ...
+```
+
+它不是缓存坏了，也不是命令没生效，而是 guardrail 在工作。此时有两个选择：
+
+- 你只是想先跑通流程或做宽松探索：加 `--allow-non-coint`
+- 你要做更严格的标的筛选：不要加，让它中止，然后换 A/H 代码对或重设研究窗口
+
+## 数据输入与缓存
+
+项目支持两种输入方式，但推荐把“在线拉取 A/H + 自动缓存”当成默认入口。
+
+### 在线拉取与自动缓存
+
+- 如果没有显式传 `--a-csv` / `--h-csv`，CLI 会先查 `.cache/ah_pairs_trading`
+- 本地已有对应缓存时，直接复用
+- 本地没有缓存时，才会用 AkShare 在线拉取 A/H 历史
+- 当前只有 A/H 历史支持在线拉取和自动缓存
+- FX 不会自动联网拉取，必须自己提供 `--fx-csv` 或 `--constant-fx-rate`
+
+这意味着：
+
+- 现在通常不需要一个单独的“先下载再运行”步骤
+- 也不需要仓库内置 `data/600036.csv` 这种示例文件才能使用主流程
+
+### 显式传本地 CSV 时的行为
+
+如果你显式传了 `--a-csv` / `--h-csv` / `--fx-csv`：
+
+- 程序会直接读取这个路径
+- 路径不存在时会立刻报错
+- 不会自动回退到 AkShare
+- 也不会改去读缓存里的远端历史
+
+所以本地 CSV 现在更适合：
+
+- 你要离线研究
+- 你已经有自己清洗过的数据
+- 你要复现实验，避免线上数据源变化
+
+### `--resume-from-cache` 和数据缓存不是一回事
+
+这个项目里有两种缓存：
+
+- 数据缓存：A/H 历史行情缓存，默认就会自动使用
+- 阶段缓存：pipeline 中间计算结果缓存，只有显式加 `--resume-from-cache` 才会参与恢复
+
+`--resume-from-cache` 的作用是：
+
+- 长任务中断后，复用已经完成的 pipeline 阶段
+
+它的作用不是：
+
+- 绕过训练集协整显著性检查
+- 改变数据源优先级
+- 把不存在的 `--a-csv` / `--h-csv` 自动变成在线拉取
+
+例如下面这条命令是合理的：
+
+```bash
+pairs-trading \
+  --a-symbol 601857 \
+  --h-symbol 00857 \
+  --constant-fx-rate 0.92 \
+  --resume-from-cache \
+  --allow-non-coint \
+  --output-dir outputs/petrochina_ah
+```
+
+## 本地 CSV 用法
+
+仓库不附带 `data/600036.csv`、`data/03968.csv`、`data/hkdcny.csv` 这类示例文件。下面只是占位符，必须替换成你自己的真实路径：
+
+```bash
+pairs-trading \
   --a-symbol 600036 \
   --h-symbol 03968 \
-  --a-csv data/600036.csv \
-  --h-csv data/03968.csv \
-  --fx-csv data/hkdcny.csv \
+  --a-csv /path/to/600036.csv \
+  --h-csv /path/to/03968.csv \
+  --fx-csv /path/to/hkdcny.csv \
   --train-end-date 2022-12-30 \
   --execution-mode long_cheaper_leg_only \
   --z-grid 1.5,2.0,2.5 \
@@ -74,51 +220,70 @@ python main.py \
   --output-dir outputs/cmb_ah
 ```
 
-### 用 AkShare 拉 A/H，手动给 FX 常数
+CSV 只要能识别日期列和收盘价列即可；英文列如 `date` / `close`，或常见中文列如 `日期` / `收盘` 都支持。
 
-```bash
-pairs-trading \
-  --a-symbol 601857 \
-  --h-symbol 00883 \
-  --constant-fx-rate 0.92 \
-  --execution-mode paired \
-  --z-grid 1.0,1.5,2.0 \
-  --output-dir outputs/cnooc_ah
-```
+## 常见报错
 
-### 缓存与断点恢复
+### 1. `FileNotFoundError: ... data/600036.csv`
 
-同一个命令就够了，不需要额外拆一个“先下载再运行”的入口。
+原因：
 
-- 默认缓存目录是 `.cache/ah_pairs_trading`
-- `--refresh-cache`
-  忽略已有缓存，重新拉数并重算
-- `--resume-from-cache`
-  复用已经完成的 pipeline 阶段，适合长任务中断后继续
-- `--cache-dir /path/to/cache`
-  指定缓存目录
-- `--no-cache`
-  完全关闭缓存
+- 你显式传了 `--a-csv data/600036.csv`
+- 但仓库里并没有这个示例文件
 
-例如：
+解决：
 
-```bash
-pairs-trading \
-  --a-symbol 601857 \
-  --h-symbol 00883 \
-  --constant-fx-rate 0.92 \
-  --resume-from-cache \
-  --output-dir outputs/cnooc_ah
-```
+- 如果你本来就想走推荐主流程，直接去掉 `--a-csv` / `--h-csv`，让程序自动在线拉取并复用缓存
+- 如果你就是要用本地文件，把路径换成你机器上的真实 CSV
+
+### 2. `Training-sample cointegration is not significant ...`
+
+原因：
+
+- 默认 `require_significant_cointegration` 是开启的
+- 当前训练窗口里，这对 A/H 标的没有通过协整显著性检查
+
+解决：
+
+- 想先跑通：加 `--allow-non-coint`
+- 想保持严格筛选：不要加，换标的、换日期窗口或重新核对 A/H 代码对
+
+### 3. 加了 `--resume-from-cache` 还是报协整不显著
+
+原因：
+
+- `--resume-from-cache` 只恢复中间计算阶段
+- 它不会跳过协整显著性校验
+
+解决：
+
+- 继续保留 guardrail：不要加 `--allow-non-coint`
+- 宽松跑完整流程：显式加 `--allow-non-coint`
+
+### 4. 输出显示的是 `Execution mode: long_cheaper_leg_only`
+
+原因：
+
+- 你没有显式传 `--execution-mode paired`
+
+解决：
+
+- 如果你要双腿模式，请把 `--execution-mode paired` 写回命令里
 
 ## 重要参数
 
 - `--a-symbol` / `--h-symbol`
-  A/H 两条腿。
+  A/H 两条腿，必须对应同一发行人。
+- `--start-date` / `--end-date`
+  分析窗口；当前 CLI 默认是 `2018-01-01` 到 `2024-12-31`。
+- `--train-end-date`
+  训练集截止日期；当前 CLI 默认是 `2022-12-31`。
+- `--constant-fx-rate`
+  没有 FX 历史时使用的静态 HKD/CNY 汇率，只适合快速验证或原型测试。
+- `--fx-csv`
+  你自己的 HKD/CNY 历史；正式回测更推荐这个。
 - `--execution-mode`
-  `long_cheaper_leg_only` 或 `paired`。
-- `--share-ratio`
-  股份换算系数，默认 `1.0`。
+  `long_cheaper_leg_only` 或 `paired`；默认是 `long_cheaper_leg_only`。
 - `--z-window`
   滚动标准化窗口，默认 `120`。
 - `--z-grid`
@@ -129,16 +294,16 @@ pairs-trading \
   价差继续恶化时的止损阈值。
 - `--max-holding-days`
   最大持有天数。
-- `--a-buy-cost-bps` / `--a-sell-cost-bps`
-  A 股单边成本假设。
-- `--h-buy-cost-bps` / `--h-sell-cost-bps`
-  H 股基础交易成本。
-- `--h-stamp-duty-bps`
-  H 股印花税假设。
-- `--fx-conversion-bps`
-  汇兑隐性成本假设。
 - `--allow-non-coint`
-  默认训练集协整不显著会直接中止；加上这个参数则继续跑。
+  允许训练集协整不显著时继续跑完整 pipeline。
+- `--refresh-cache`
+  忽略已有缓存，重新拉数并重算。
+- `--resume-from-cache`
+  复用已完成的 pipeline 阶段；不会跳过 guardrail。
+- `--cache-dir`
+  指定缓存目录，默认 `.cache/ah_pairs_trading`。
+- `--no-cache`
+  关闭磁盘缓存。
 
 ## 输出内容
 

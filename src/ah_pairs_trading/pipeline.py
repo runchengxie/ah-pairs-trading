@@ -305,7 +305,15 @@ def run_ah_relative_value_pipeline(
         ),
     )
     if config.require_significant_cointegration and not training_cointegration.significant:
-        raise ValueError("Training-sample cointegration is not significant; aborting by configuration.")
+        raise ValueError(
+            "Training-sample cointegration is not significant "
+            f"(p-value={training_cointegration.p_value:.6f}, alpha={config.alpha:.2f}) "
+            f"for {config.a_symbol}/{config.h_symbol}. "
+            "Aborting because `require_significant_cointegration` is enabled. "
+            "Re-run with `--allow-non-coint` to continue. "
+            "`--resume-from-cache` does not bypass this validation. "
+            "Also verify the A/H symbols refer to the same issuer."
+        )
 
     ecm = stage_cache.load_or_compute(
         "ecm",

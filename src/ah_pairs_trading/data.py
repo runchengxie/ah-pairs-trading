@@ -110,6 +110,14 @@ def load_fx_csv(path: str | Path) -> pd.DataFrame:
     return standardize_fx_frame(frame)
 
 
+def _missing_csv_error(path: str | Path, *, argument_name: str, hint: str) -> FileNotFoundError:
+    return FileNotFoundError(
+        f"Local CSV passed via `{argument_name}` was not found: {Path(path)}. "
+        "The repository does not ship sample CSV files at that path. "
+        f"{hint}"
+    )
+
+
 def _compact_date(date_str: str) -> str:
     return pd.Timestamp(date_str).strftime("%Y%m%d")
 
@@ -179,6 +187,10 @@ def _resolve_frame(
     csv_path: Path | None,
     fetcher,
     *fetch_args,
+    csv_argument_name: str = "--*-csv",
+    missing_file_hint: str = (
+        "Point the argument at a real file, or remove the local CSV option to use automatic loading instead."
+    ),
     cache_dir: Path | None = None,
     cache_namespace: str | None = None,
     cache_payload: dict[str, str | float | None] | None = None,
@@ -187,6 +199,8 @@ def _resolve_frame(
     if supplied_frame is not None:
         return standardize_history_frame(supplied_frame)
     if csv_path is not None:
+        if not Path(csv_path).exists():
+            raise _missing_csv_error(csv_path, argument_name=csv_argument_name, hint=missing_file_hint)
         return load_history_csv(csv_path)
 
     if cache_dir is not None and cache_namespace is not None and cache_payload is not None:
@@ -214,6 +228,15 @@ def _resolve_fx_frame(
     if supplied_frame is not None:
         return standardize_fx_frame(supplied_frame)
     if data_config.fx_csv_path is not None:
+        if not Path(data_config.fx_csv_path).exists():
+            raise _missing_csv_error(
+                data_config.fx_csv_path,
+                argument_name="--fx-csv",
+                hint=(
+                    "Point `--fx-csv` at a real HKD/CNY history file, or remove it and use "
+                    "`--constant-fx-rate` for quick prototyping."
+                ),
+            )
         return load_fx_csv(data_config.fx_csv_path)
     if data_config.constant_fx_rate is not None:
         index = pd.date_range(start_date, end_date, freq="B")
@@ -376,6 +399,11 @@ def load_ah_pair_data(
         config.start_date,
         config.end_date,
         config.data.a_adjust,
+        csv_argument_name="--a-csv",
+        missing_file_hint=(
+            "Remove `--a-csv` to let the CLI load the A-share history from AkShare and the local data cache "
+            "instead."
+        ),
         cache_dir=config.cache_dir,
         cache_namespace="a_share_history",
         cache_payload={
@@ -395,6 +423,11 @@ def load_ah_pair_data(
         config.start_date,
         config.end_date,
         config.data.h_adjust,
+        csv_argument_name="--h-csv",
+        missing_file_hint=(
+            "Remove `--h-csv` to let the CLI load the H-share history from AkShare and the local data cache "
+            "instead."
+        ),
         cache_dir=config.cache_dir,
         cache_namespace="h_share_history",
         cache_payload={
@@ -429,6 +462,10 @@ def load_ah_pair_data(
             config.start_date,
             config.end_date,
             config.data,
+            csv_argument_name="--benchmark-csv",
+            missing_file_hint=(
+                "Remove `--benchmark-csv` to let the CLI fetch the benchmark online, or point it at a real file."
+            ),
             cache_dir=config.cache_dir,
             cache_namespace="benchmark_history",
             cache_payload={

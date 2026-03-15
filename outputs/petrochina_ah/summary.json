@@ -1,0 +1,103 @@
+{
+  "full_sample_cointegration": {
+    "dependent_symbol": "601857",
+    "independent_symbol": "00857",
+    "alpha": 0.05,
+    "score": -3.5875162315428275,
+    "p_value": 0.025386463682293636,
+    "critical_values": [
+      -3.9031100797294926,
+      -3.339846867915115,
+      -3.0470292422464684
+    ],
+    "significant": true,
+    "intercept": 0.8519416275282096,
+    "hedge_ratio": 0.739869350774829,
+    "residual_mean": 7.94288355892214e-16,
+    "residual_std": 0.07415199239725989
+  },
+  "training_cointegration": {
+    "dependent_symbol": "601857",
+    "independent_symbol": "00857",
+    "alpha": 0.05,
+    "score": -2.7036722908533144,
+    "p_value": 0.19826067392753793,
+    "critical_values": [
+      -3.9057532627742635,
+      -3.3413173512364023,
+      -3.0480492426122683
+    ],
+    "significant": false,
+    "intercept": 0.8438530190625597,
+    "hedge_ratio": 0.7587825441674153,
+    "residual_mean": -5.539824719485527e-16,
+    "residual_std": 0.0762913164155374
+  },
+  "ecm": {
+    "error_correction_speed": -0.017017926787714553,
+    "error_correction_p_value": 5.013561174016125e-05,
+    "coefficients": {
+      "const": 2.489399285530894e-05,
+      "error_correction_lag1": -0.017017926787714553,
+      "independent_diff": 0.5694683929734875
+    }
+  },
+  "mean_reversion": {
+    "ar_coefficient": 0.9838926870317557,
+    "theta": 0.016238445771685428,
+    "half_life": 42.68556180226119
+  },
+  "matrix_ols": {
+    "intercept": 0.8519416275282099,
+    "hedge_ratio": 0.7398693507748277
+  },
+  "var_diagnostics": {
+    "lag_order": 1,
+    "selected_orders": {
+      "aic": 1,
+      "bic": 0,
+      "hqic": 0,
+      "fpe": 1
+    },
+    "is_stable": true,
+    "roots": [
+      {
+        "real": 19.56938617264821,
+        "imag": 0.0
+      },
+      {
+        "real": -16.692528667699076,
+        "imag": 0.0
+      }
+    ],
+    "inverse_root_magnitudes": [
+      0.0511002231330936,
+      0.05990704104256252
+    ]
+  },
+  "best_entry_z": 1.5,
+  "train_backtest": {
+    "final_capital": 159539.2242472,
+    "total_return": 0.5953922424720002,
+    "annual_return": 0.10490322356224024,
+    "sharpe_ratio": 0.6313408601713059,
+    "max_drawdown": -0.2314631488701171,
+    "trade_count": 49,
+    "win_rate": 0.5510204081632653,
+    "avg_holding_days": 9.448979591836734,
+    "total_costs": 13255.2337528
+  },
+  "test_backtest": {
+    "final_capital": 184552.4887656001,
+    "total_return": 0.8455248876560011,
+    "annual_return": 0.39286920143526305,
+    "sharpe_ratio": 1.9227239197875068,
+    "max_drawdown": -0.13590498206568402,
+    "trade_count": 23,
+    "win_rate": 0.8260869565217391,
+    "avg_holding_days": 9.08695652173913,
+    "total_costs": 7734.447634400001
+  },
+  "execution_mode": "long_cheaper_leg_only",
+  "share_ratio": 1.0
+}

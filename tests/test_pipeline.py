@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
+from ah_pairs_trading.analysis import CointegrationResult
 from ah_pairs_trading.config import CostConfig, DataConfig, PipelineConfig, StrategyConfig
 from ah_pairs_trading.pipeline import run_ah_relative_value_pipeline
 
@@ -137,3 +139,76 @@ def test_pipeline_resume_from_cache_reuses_stage_outputs(tmp_path, monkeypatch) 
 
     assert first.best_entry_z == second.best_entry_z
     pd.testing.assert_frame_equal(first.rolling_cointegration, second.rolling_cointegration)
+
+
+def test_pipeline_cointegration_error_surfaces_context(monkeypatch) -> None:
+    """The cointegration guardrail should report the failing p-value and recovery hint."""
+
+    a_frame, h_frame, fx_frame = make_raw_ah_frames()
+    residual_index = pd.DatetimeIndex(a_frame["date"])
+    fake_result = CointegrationResult(
+        dependent_symbol="601857",
+        independent_symbol="00857",
+        alpha=0.05,
+        score=-2.7,
+        p_value=0.19848,
+        critical_values=(-3.9, -3.34, -3.05),
+        significant=False,
+        intercept=0.03,
+        hedge_ratio=0.82,
+        residual_mean=0.0,
+        residual_std=0.14,
+        residuals=pd.Series(np.zeros(len(residual_index)), index=residual_index, name="residual"),
+        regression_summary_text="",
+        regression_params=pd.Series({"const": 0.03, "00857": 0.82}),
+    )
+
+    monkeypatch.setattr("ah_pairs_trading.pipeline.run_cointegration_analysis", lambda *args, **kwargs: fake_result)
+
+    config = PipelineConfig(
+        a_symbol="601857",
+        h_symbol="00857",
+        start_date="2020-01-01",
+        end_date="2020-12-31",
+        train_end_date="2020-09-30",
+        require_significant_cointegration=True,
+        data=DataConfig(constant_fx_rate=None),
+        strategy=StrategyConfig(
+            entry_z_candidates=(0.8, 1.0),
+            exit_z=0.2,
+            stop_z=2.5,
+            z_window=20,
+            z_min_periods=20,
+            max_holding_days=15,
+            position_size_fraction=0.75,
+            initial_capital=100_000.0,
+            execution_mode="long_cheaper_leg_only",
+            a_lot_size=100,
+            h_lot_size=100,
+        ),
+        costs=CostConfig(
+            a_buy_cost_bps=0.0,
+            a_sell_cost_bps=0.0,
+            h_buy_cost_bps=0.0,
+            h_sell_cost_bps=0.0,
+            h_stamp_duty_bps=0.0,
+            fx_conversion_bps=0.0,
+        ),
+        cache_dir=None,
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        run_ah_relative_value_pipeline(
+            config,
+            a_frame=a_frame,
+            h_frame=h_frame,
+            fx_frame=fx_frame,
+        )
+
+    message = str(exc_info.value)
+    assert "p-value=0.198480" in message
+    assert "alpha=0.05" in message
+    assert "601857/00857" in message
+    assert "--allow-non-coint" in message
+    assert "--resume-from-cache" in message
+    assert "same issuer" in message
