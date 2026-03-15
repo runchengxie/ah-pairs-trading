@@ -284,5 +284,5 @@ def fit_var_diagnostics(
         roots=roots,
         inverse_root_magnitudes=inverse_root_magnitudes,
         selection_summary_text=order_selection.summary().as_text(),
-        model_summary_text=result.summary().as_text(),
+        model_summary_text=str(result.summary()),
     )

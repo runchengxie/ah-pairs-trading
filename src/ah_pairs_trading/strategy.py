@@ -1,4 +1,4 @@
-"""Trading strategy logic for the fixed-hedge-ratio backtest."""
+"""Trading strategy logic for A/H relative-value backtests."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from .config import CostConfig, StrategyConfig
 from .metrics import compute_max_drawdown
 
 
@@ -21,6 +22,9 @@ class BacktestSummary:
     sharpe_ratio: float
     max_drawdown: float
     trade_count: int
+    win_rate: float
+    avg_holding_days: float
+    total_costs: float
 
     def as_dict(self) -> dict[str, float | int]:
         """Return a JSON-serializable summary."""
@@ -32,6 +36,9 @@ class BacktestSummary:
             "sharpe_ratio": self.sharpe_ratio,
             "max_drawdown": self.max_drawdown,
             "trade_count": self.trade_count,
+            "win_rate": self.win_rate,
+            "avg_holding_days": self.avg_holding_days,
+            "total_costs": self.total_costs,
         }
 
 
@@ -46,146 +53,288 @@ class BacktestResult:
 
 @dataclass(slots=True)
 class PositionState:
-    """The currently open spread position, if any."""
+    """The currently open A/H relative-value position."""
 
     entry_date: pd.Timestamp
+    entry_row_number: int
     direction: str
-    dependent_shares: float
-    independent_shares: float
-    dependent_entry_price: float
-    independent_entry_price: float
     entry_zscore: float
+    a_side: int
+    a_shares: int
+    a_entry_price: float
+    h_side: int
+    h_shares: int
+    h_entry_price: float
+    entry_cost: float
 
 
-def calculate_spread(
-    dependent_price: float,
-    independent_price: float,
-    intercept: float,
+def _round_lot_shares(notional: float, price: float, lot_size: int) -> int:
+    if price <= 0:
+        return 0
+    raw_shares = int(notional // price)
+    if lot_size > 1:
+        raw_shares = raw_shares // lot_size * lot_size
+    return max(raw_shares, 0)
+
+
+def _transaction_cost(notional: float, market: str, side: int, costs: CostConfig) -> float:
+    if notional <= 0:
+        return 0.0
+
+    if market == "a":
+        rate_bps = costs.a_buy_cost_bps if side > 0 else costs.a_sell_cost_bps
+    else:
+        base_rate_bps = costs.h_buy_cost_bps if side > 0 else costs.h_sell_cost_bps
+        rate_bps = base_rate_bps + costs.h_stamp_duty_bps + costs.fx_conversion_bps
+    return float(notional * rate_bps / 10_000.0)
+
+
+def _mark_to_market(position: PositionState, a_price: float, h_price: float) -> float:
+    a_pnl = position.a_side * position.a_shares * (a_price - position.a_entry_price)
+    h_pnl = position.h_side * position.h_shares * (h_price - position.h_entry_price)
+    return float(a_pnl + h_pnl)
+
+
+def _gross_exposure(position: PositionState, a_price: float, h_price: float) -> float:
+    return float(abs(position.a_shares * a_price) + abs(position.h_shares * h_price))
+
+
+def _build_position(
+    *,
+    date: pd.Timestamp,
+    row_number: int,
+    zscore: float,
+    a_price: float,
+    h_price: float,
+    capital: float,
     hedge_ratio: float,
-) -> float:
-    """Compute the log-price spread implied by the cointegration model."""
+    strategy_config: StrategyConfig,
+    cost_config: CostConfig,
+) -> PositionState | None:
+    gross_budget = capital * strategy_config.position_size_fraction
+    if gross_budget <= 0:
+        return None
 
-    return float(np.log(dependent_price) - intercept - hedge_ratio * np.log(independent_price))
+    if strategy_config.execution_mode == "long_cheaper_leg_only":
+        if zscore > 0:
+            h_notional = gross_budget
+            h_shares = _round_lot_shares(h_notional, h_price, strategy_config.h_lot_size)
+            if h_shares <= 0:
+                return None
+            entry_cost = _transaction_cost(h_shares * h_price, "h", 1, cost_config)
+            return PositionState(
+                entry_date=date,
+                entry_row_number=row_number,
+                direction="long_h_only",
+                entry_zscore=float(zscore),
+                a_side=0,
+                a_shares=0,
+                a_entry_price=a_price,
+                h_side=1,
+                h_shares=h_shares,
+                h_entry_price=h_price,
+                entry_cost=entry_cost,
+            )
 
+        a_notional = gross_budget
+        a_shares = _round_lot_shares(a_notional, a_price, strategy_config.a_lot_size)
+        if a_shares <= 0:
+            return None
+        entry_cost = _transaction_cost(a_shares * a_price, "a", 1, cost_config)
+        return PositionState(
+            entry_date=date,
+            entry_row_number=row_number,
+            direction="long_a_only",
+            entry_zscore=float(zscore),
+            a_side=1,
+            a_shares=a_shares,
+            a_entry_price=a_price,
+            h_side=0,
+            h_shares=0,
+            h_entry_price=h_price,
+            entry_cost=entry_cost,
+        )
 
-def _mark_to_market(state: PositionState, dependent_price: float, independent_price: float) -> float:
-    """Calculate the current mark-to-market value of the open position."""
+    h_weight = max(abs(float(hedge_ratio)), 1e-8)
+    unit_budget = gross_budget / (1.0 + h_weight)
+    a_notional = unit_budget
+    h_notional = unit_budget * h_weight
 
-    dependent_pnl = state.dependent_shares * (dependent_price - state.dependent_entry_price)
-    independent_pnl = state.independent_shares * (independent_price - state.independent_entry_price)
-    return float(dependent_pnl + independent_pnl)
+    a_shares = _round_lot_shares(a_notional, a_price, strategy_config.a_lot_size)
+    h_shares = _round_lot_shares(h_notional, h_price, strategy_config.h_lot_size)
+    if a_shares <= 0 or h_shares <= 0:
+        return None
+
+    if zscore > 0:
+        a_side = -1
+        h_side = 1
+        direction = "short_a_long_h"
+    else:
+        a_side = 1
+        h_side = -1
+        direction = "long_a_short_h"
+
+    entry_cost = _transaction_cost(a_shares * a_price, "a", a_side, cost_config) + _transaction_cost(
+        h_shares * h_price,
+        "h",
+        h_side,
+        cost_config,
+    )
+    return PositionState(
+        entry_date=date,
+        entry_row_number=row_number,
+        direction=direction,
+        entry_zscore=float(zscore),
+        a_side=a_side,
+        a_shares=a_shares,
+        a_entry_price=a_price,
+        h_side=h_side,
+        h_shares=h_shares,
+        h_entry_price=h_price,
+        entry_cost=entry_cost,
+    )
 
 
 def _close_trade_record(
-    state: PositionState,
+    position: PositionState,
     exit_date: pd.Timestamp,
     exit_zscore: float,
-    pnl: float,
+    gross_pnl: float,
+    exit_cost: float,
+    holding_days: int,
+    exit_reason: str,
 ) -> dict[str, Any]:
-    """Build a trade record for the completed position."""
-
+    total_cost = position.entry_cost + exit_cost
     return {
-        "entry_date": state.entry_date,
+        "entry_date": position.entry_date,
         "exit_date": exit_date,
-        "direction": state.direction,
-        "dependent_shares": state.dependent_shares,
-        "independent_shares": state.independent_shares,
-        "entry_zscore": state.entry_zscore,
+        "direction": position.direction,
+        "a_side": position.a_side,
+        "a_shares": position.a_shares,
+        "h_side": position.h_side,
+        "h_shares": position.h_shares,
+        "entry_zscore": position.entry_zscore,
         "exit_zscore": exit_zscore,
-        "pnl": pnl,
+        "gross_pnl": gross_pnl,
+        "entry_cost": position.entry_cost,
+        "exit_cost": exit_cost,
+        "net_pnl": gross_pnl - total_cost,
+        "holding_days": holding_days,
+        "exit_reason": exit_reason,
     }
 
 
-def backtest_fixed_beta(
-    price_frame: pd.DataFrame,
-    dependent_symbol: str,
-    independent_symbol: str,
-    intercept: float,
+def backtest_relative_value_strategy(
+    signal_frame: pd.DataFrame,
+    a_symbol: str,
+    h_symbol: str,
     hedge_ratio: float,
-    residual_mean: float,
-    residual_std: float,
-    entry_z: float,
-    exit_z: float = 0.2,
-    initial_capital: float = 100_000.0,
+    strategy_config: StrategyConfig,
+    cost_config: CostConfig,
     close_on_end: bool = True,
 ) -> BacktestResult:
-    """Backtest a fixed hedge-ratio pairs strategy on an aligned price frame."""
+    """Backtest an A/H relative-value strategy on a prepared signal frame."""
 
-    if residual_std <= 0:
-        raise ValueError("Residual standard deviation must be positive for z-score based trading.")
+    if signal_frame.empty:
+        raise ValueError("The signal frame is empty.")
+    if not strategy_config.entry_z_candidates:
+        raise ValueError("At least one entry z-score candidate is required.")
+    if strategy_config.stop_z <= strategy_config.exit_z:
+        raise ValueError("The stop-loss z-score must be larger than the exit z-score.")
 
     open_position: PositionState | None = None
     realized_pnl = 0.0
+    total_costs = 0.0
     equity_rows: list[dict[str, Any]] = []
     trade_rows: list[dict[str, Any]] = []
-    last_row_index = len(price_frame) - 1
-    independent_units = max(abs(float(hedge_ratio)), 1e-8)
+    last_row_index = len(signal_frame) - 1
 
-    for row_number, (date, row) in enumerate(price_frame.iterrows()):
-        dependent_price = float(row[dependent_symbol])
-        independent_price = float(row[independent_symbol])
-        spread = calculate_spread(
-            dependent_price=dependent_price,
-            independent_price=independent_price,
-            intercept=intercept,
-            hedge_ratio=hedge_ratio,
-        )
-        zscore = (spread - residual_mean) / residual_std
+    for row_number, (date, row) in enumerate(signal_frame.iterrows()):
+        a_price = float(row[a_symbol])
+        h_price = float(row[h_symbol])
+        zscore = float(row["zscore"]) if pd.notna(row["zscore"]) else np.nan
+        spread = float(row["spread"]) if pd.notna(row["spread"]) else np.nan
+        cheap_leg = row.get("cheap_leg", "flat")
         unrealized_pnl = 0.0
-
-        if open_position is None:
-            if zscore > entry_z:
-                open_position = PositionState(
-                    entry_date=date,
-                    direction="short_spread",
-                    dependent_shares=-1.0,
-                    independent_shares=independent_units,
-                    dependent_entry_price=dependent_price,
-                    independent_entry_price=independent_price,
-                    entry_zscore=float(zscore),
-                )
-            elif zscore < -entry_z:
-                open_position = PositionState(
-                    entry_date=date,
-                    direction="long_spread",
-                    dependent_shares=1.0,
-                    independent_shares=-independent_units,
-                    dependent_entry_price=dependent_price,
-                    independent_entry_price=independent_price,
-                    entry_zscore=float(zscore),
-                )
+        closed_this_bar = False
 
         if open_position is not None:
-            unrealized_pnl = _mark_to_market(
-                open_position,
-                dependent_price=dependent_price,
-                independent_price=independent_price,
-            )
-            should_close = abs(zscore) < exit_z
-            if close_on_end and row_number == last_row_index:
-                should_close = True
+            unrealized_pnl = _mark_to_market(open_position, a_price, h_price)
+            holding_days = row_number - open_position.entry_row_number
+            exit_reason: str | None = None
+            if pd.notna(zscore) and abs(zscore) <= strategy_config.exit_z:
+                exit_reason = "mean_reversion"
+            elif pd.notna(zscore) and abs(zscore) >= strategy_config.stop_z:
+                exit_reason = "stop_loss"
+            elif holding_days >= strategy_config.max_holding_days:
+                exit_reason = "max_holding_period"
+            elif close_on_end and row_number == last_row_index:
+                exit_reason = "end_of_sample"
 
-            if should_close:
-                realized_pnl += unrealized_pnl
+            if exit_reason is not None:
+                exit_cost = _transaction_cost(
+                    open_position.a_shares * a_price,
+                    "a",
+                    -open_position.a_side,
+                    cost_config,
+                ) + _transaction_cost(
+                    open_position.h_shares * h_price,
+                    "h",
+                    -open_position.h_side,
+                    cost_config,
+                )
+                realized_pnl += unrealized_pnl - exit_cost
+                total_costs += exit_cost
                 trade_rows.append(
                     _close_trade_record(
-                        state=open_position,
+                        position=open_position,
                         exit_date=date,
-                        exit_zscore=float(zscore),
-                        pnl=float(unrealized_pnl),
+                        exit_zscore=float(zscore) if pd.notna(zscore) else np.nan,
+                        gross_pnl=float(unrealized_pnl),
+                        exit_cost=float(exit_cost),
+                        holding_days=holding_days,
+                        exit_reason=exit_reason,
                     )
                 )
                 open_position = None
                 unrealized_pnl = 0.0
+                closed_this_bar = True
 
-        capital = initial_capital + realized_pnl + unrealized_pnl
+        available_capital = strategy_config.initial_capital + realized_pnl
+        if (
+            open_position is None
+            and not closed_this_bar
+            and row_number != last_row_index
+            and pd.notna(zscore)
+            and abs(zscore) >= min(strategy_config.entry_z_candidates)
+        ):
+            candidate = _build_position(
+                date=date,
+                row_number=row_number,
+                zscore=float(zscore),
+                a_price=a_price,
+                h_price=h_price,
+                capital=available_capital,
+                hedge_ratio=hedge_ratio,
+                strategy_config=strategy_config,
+                cost_config=cost_config,
+            )
+            if candidate is not None:
+                open_position = candidate
+                realized_pnl -= candidate.entry_cost
+                total_costs += candidate.entry_cost
+                available_capital -= candidate.entry_cost
+
+        capital = strategy_config.initial_capital + realized_pnl + unrealized_pnl
         equity_rows.append(
             {
                 "date": date,
                 "capital": capital,
                 "spread": spread,
                 "zscore": zscore,
-                "position": 0 if open_position is None else (1 if open_position.direction == "long_spread" else -1),
+                "cheap_leg": cheap_leg,
+                "position": "flat" if open_position is None else open_position.direction,
+                "gross_exposure": 0.0 if open_position is None else _gross_exposure(open_position, a_price, h_price),
             }
         )
 
@@ -198,15 +347,23 @@ def backtest_fixed_beta(
             "entry_date",
             "exit_date",
             "direction",
-            "dependent_shares",
-            "independent_shares",
+            "a_side",
+            "a_shares",
+            "h_side",
+            "h_shares",
             "entry_zscore",
             "exit_zscore",
-            "pnl",
+            "gross_pnl",
+            "entry_cost",
+            "exit_cost",
+            "net_pnl",
+            "holding_days",
+            "exit_reason",
         ],
     )
+
     final_capital = float(equity_curve["capital"].iloc[-1])
-    total_return = final_capital / initial_capital - 1.0
+    total_return = final_capital / strategy_config.initial_capital - 1.0
     annual_return = 0.0
     if len(equity_curve) > 0:
         annual_return = float((1.0 + total_return) ** (252 / len(equity_curve)) - 1.0)
@@ -216,6 +373,12 @@ def backtest_fixed_beta(
     if returns_std > 0:
         sharpe_ratio = float(np.sqrt(252) * equity_curve["returns"].mean() / returns_std)
 
+    win_rate = 0.0
+    avg_holding_days = 0.0
+    if not trade_frame.empty:
+        win_rate = float((trade_frame["net_pnl"] > 0).mean())
+        avg_holding_days = float(trade_frame["holding_days"].mean())
+
     summary = BacktestSummary(
         final_capital=final_capital,
         total_return=float(total_return),
@@ -223,39 +386,46 @@ def backtest_fixed_beta(
         sharpe_ratio=sharpe_ratio,
         max_drawdown=compute_max_drawdown(equity_curve["capital"]),
         trade_count=int(len(trade_frame)),
+        win_rate=win_rate,
+        avg_holding_days=avg_holding_days,
+        total_costs=float(total_costs),
     )
-
     return BacktestResult(equity_curve=equity_curve, trades=trade_frame, summary=summary)
 
 
 def grid_search_entry_z(
-    price_frame: pd.DataFrame,
-    dependent_symbol: str,
-    independent_symbol: str,
-    intercept: float,
+    signal_frame: pd.DataFrame,
+    a_symbol: str,
+    h_symbol: str,
     hedge_ratio: float,
-    residual_mean: float,
-    residual_std: float,
-    entry_z_candidates: tuple[float, ...],
-    exit_z: float = 0.2,
-    initial_capital: float = 100_000.0,
-    objective: str = "sharpe_ratio",
+    strategy_config: StrategyConfig,
+    cost_config: CostConfig,
 ) -> tuple[float, pd.DataFrame]:
-    """Run the backtest over several entry thresholds and pick the best one."""
+    """Run the strategy over several entry thresholds and pick the best one."""
 
     rows: list[dict[str, float | int]] = []
-    for entry_z in entry_z_candidates:
-        result = backtest_fixed_beta(
-            price_frame=price_frame,
-            dependent_symbol=dependent_symbol,
-            independent_symbol=independent_symbol,
-            intercept=intercept,
+    for entry_z in strategy_config.entry_z_candidates:
+        candidate_config = StrategyConfig(
+            entry_z_candidates=(entry_z,),
+            exit_z=strategy_config.exit_z,
+            stop_z=strategy_config.stop_z,
+            z_window=strategy_config.z_window,
+            z_min_periods=strategy_config.z_min_periods,
+            max_holding_days=strategy_config.max_holding_days,
+            position_size_fraction=strategy_config.position_size_fraction,
+            initial_capital=strategy_config.initial_capital,
+            objective=strategy_config.objective,
+            execution_mode=strategy_config.execution_mode,
+            a_lot_size=strategy_config.a_lot_size,
+            h_lot_size=strategy_config.h_lot_size,
+        )
+        result = backtest_relative_value_strategy(
+            signal_frame=signal_frame,
+            a_symbol=a_symbol,
+            h_symbol=h_symbol,
             hedge_ratio=hedge_ratio,
-            residual_mean=residual_mean,
-            residual_std=residual_std,
-            entry_z=entry_z,
-            exit_z=exit_z,
-            initial_capital=initial_capital,
+            strategy_config=candidate_config,
+            cost_config=cost_config,
         )
         row = result.summary.as_dict()
         row["entry_z"] = entry_z
@@ -265,8 +435,8 @@ def grid_search_entry_z(
         raise ValueError("At least one entry z-score candidate is required.")
 
     grid = pd.DataFrame(rows).set_index("entry_z").sort_index()
-    if objective not in grid.columns:
-        raise ValueError(f"Objective '{objective}' is not available in the grid-search output.")
+    if strategy_config.objective not in grid.columns:
+        raise ValueError(f"Objective '{strategy_config.objective}' is not available in the grid-search output.")
 
-    best_entry_z = float(grid[objective].idxmax())
+    best_entry_z = float(grid[strategy_config.objective].idxmax())
     return best_entry_z, grid

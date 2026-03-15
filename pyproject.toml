@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ah-pairs-trading"
 version = "0.1.0"
-description = "A modular pairs trading project built around cointegration analysis and backtesting."
+description = "An A/H relative-value research project built around cointegration analysis and cost-aware backtesting."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
