@@ -218,3 +218,6 @@ __marimo__/
 # Debugging
 full_project_source.txt
 
+# Generated research outputs
+/outputs/
+
