@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ah-pairs-trading"
+version = "0.1.0"
+description = "A modular pairs trading project built around cointegration analysis and backtesting."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "akshare>=1.16.0",
+  "matplotlib>=3.8.0",
+  "numpy>=1.26.0",
+  "pandas>=2.2.0",
+  "statsmodels>=0.14.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2.0",
+]
+
+[project.scripts]
+pairs-trading = "ah_pairs_trading.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
