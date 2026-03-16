@@ -5,7 +5,15 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .config import CostConfig, DataConfig, PipelineConfig, RollingConfig, StrategyConfig
+from .config import (
+    DEFAULT_CACHE_DIR,
+    DEFAULT_RUNS_DIR,
+    CostConfig,
+    DataConfig,
+    PipelineConfig,
+    RollingConfig,
+    StrategyConfig,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -191,7 +199,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--cache-dir",
         type=Path,
-        default=Path(".cache/ah_pairs_trading"),
+        default=DEFAULT_CACHE_DIR,
         help="Directory used for automatic data caching and optional stage checkpoints.",
     )
     parser.add_argument(
@@ -213,7 +221,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-dir",
         type=Path,
         default=None,
-        help="Optional directory used to save CSV, JSON, text, and PNG artifacts.",
+        help=f"Optional directory used to save CSV, JSON, text, and PNG artifacts. Recommended under `{DEFAULT_RUNS_DIR}/<run-name>`.",
     )
     return parser
 

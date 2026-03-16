@@ -23,6 +23,13 @@ pip install -e ".[dev]"
 uv sync
 ```
 
+## 目录约定
+
+- `data/` 保留给手工维护或外部导入的输入文件，例如 `data/fx/*.csv`
+- `artifacts/cache/ah_pairs_trading/` 保存自动数据缓存和可选 stage cache
+- `artifacts/runs/<run-name>/` 保存每次研究运行产出的 CSV、图表和摘要
+- `configs/` 保存固定实验参数模板；当前先作为预设清单，后续 CLI 会支持 `--config`
+
 ## 30 秒快速开始
 
 ### 1. Smoke test
@@ -35,21 +42,23 @@ pairs-trading \
   --h-symbol 00857 \
   --constant-fx-rate 0.92 \
   --allow-non-coint \
-  --output-dir outputs/petrochina_ah_smoke
+  --output-dir artifacts/runs/petrochina_ah_smoke
 ```
 
 说明：
 
-- A/H 历史会由 AkShare 在线拉取，并在 `.cache/ah_pairs_trading` 下维护按 symbol 的增量主档缓存
+- A/H 历史会由 AkShare 在线拉取，并在 `artifacts/cache/ah_pairs_trading` 下维护按 symbol 的增量主档缓存
 - 后续扩大回测窗口时，缓存会优先复用已有覆盖区间，只补抓左侧或右侧缺口，并更新旁边的 JSON manifest
+- 运行结果建议统一写到 `artifacts/runs/<run-name>`
 - `--constant-fx-rate` 只适合快速验证或原型测试
 - `--allow-non-coint` 只适合 smoke test 或宽松探索
 - 没有显式传 `--execution-mode` 时，默认是 `long_cheaper_leg_only`
+- 对应的固定实验模板见 `configs/petrochina_smoke.toml`
 
 如果你还没安装 CLI，也可以继续用：
 
 ```bash
-python main.py ...
+python -m ah_pairs_trading ...
 ```
 
 ### 2. Research run
@@ -72,7 +81,7 @@ pairs-trading \
   --a-symbol 601857 \
   --h-symbol 00857 \
   --fx-csv data/fx/hkdcny_2018_2024.csv \
-  --output-dir outputs/petrochina_ah_research
+  --output-dir artifacts/runs/petrochina_ah_research
 ```
 
 说明：
@@ -80,7 +89,9 @@ pairs-trading \
 - 不加 `--allow-non-coint` 时，训练集协整不显著会直接中止
 - 正式回测更推荐 `--fx-csv`，而不是 `--constant-fx-rate`
 - `scripts/fetch_fx_history.py` 会通过 Frankfurter 拉取 ECB-backed 参考汇率，并输出项目兼容的 `date,fx_rate,...` CSV
+- 生成的 FX CSV 仍建议放在 `data/fx/`，因为它属于用户可复现输入，而不是运行产物
 - 主回测 CLI 仍然不会自动联网拉 FX；这样做是为了保持输入可复现
+- 对应的固定实验模板见 `configs/petrochina_research.toml`
 
 ## 执行模式
 
@@ -126,5 +137,5 @@ pairs-trading \
 
 ## 说明
 
-- 这个仓库当前更适合叫 A/H relative value research platform，而不是默认可做空的市场中性模板。
+- 这个仓库当前主要用于相对价值研究，可做空的市场中性策略目前仍停留在概念阶段。
 - `analysis.py` 中的 ECM、半衰期、滚动协整、矩阵 OLS、VAR 稳定性诊断仍然保留，但它们当前属于诊断层，不直接驱动交易执行。

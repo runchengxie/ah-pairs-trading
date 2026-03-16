@@ -2,8 +2,19 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from ah_pairs_trading import cli
 from ah_pairs_trading import pipeline
+
+
+def test_cli_parser_uses_artifacts_cache_dir_by_default() -> None:
+    """The default cache directory should live under `artifacts/cache`."""
+
+    args = cli.build_parser().parse_args([])
+
+    assert args.cache_dir == Path("artifacts/cache/ah_pairs_trading")
+    assert args.output_dir is None
 
 
 def test_cli_prints_rendered_scorecard(monkeypatch, capsys) -> None:

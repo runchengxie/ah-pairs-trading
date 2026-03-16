@@ -1,5 +1,12 @@
 # CLI 参数参考
 
+## 路径约定
+
+- `data/` 保留给手工维护或外部导入的输入文件，例如 `data/fx/*.csv`
+- `artifacts/cache/ah_pairs_trading/` 是默认缓存目录
+- `artifacts/runs/<run-name>/` 是推荐的运行结果目录
+- `configs/` 保存固定实验参数模板；当前先作为预设清单，后续 CLI 会支持 `--config`
+
 ## 标的与日期
 
 - `--a-symbol`
@@ -100,7 +107,7 @@
 ## 缓存与输出
 
 - `--cache-dir`
-  缓存目录，默认 `.cache/ah_pairs_trading`。其中原始市场数据会按 symbol 维护增量主档，pipeline stage cache 也会放在这里
+  缓存目录，默认 `artifacts/cache/ah_pairs_trading`。其中原始市场数据会按 symbol 维护增量主档，pipeline stage cache 也会放在这里
 - `--no-cache`
   关闭磁盘缓存
 - `--refresh-cache`
@@ -108,7 +115,7 @@
 - `--resume-from-cache`
   只恢复已完成的 pipeline 阶段；不会改变原始市场数据的自动增量缓存逻辑，也不会跳过 guardrail
 - `--output-dir`
-  输出目录，用于保存 CSV、PNG、JSON、Markdown 摘要
+  输出目录，用于保存 CSV、PNG、JSON、Markdown 摘要；更推荐写到 `artifacts/runs/<run-name>`
 
 ## 最常用的两种命令
 
@@ -120,7 +127,7 @@ pairs-trading \
   --h-symbol 00857 \
   --constant-fx-rate 0.92 \
   --allow-non-coint \
-  --output-dir outputs/petrochina_ah_smoke
+  --output-dir artifacts/runs/petrochina_ah_smoke
 ```
 
 ### Research run
@@ -143,5 +150,10 @@ pairs-trading \
   --fx-csv data/fx/hkdcny_2018_2024.csv \
   --hedge-ratio-mode rolling \
   --cointegration-gate-mode significant \
-  --output-dir outputs/petrochina_ah_research
+  --output-dir artifacts/runs/petrochina_ah_research
 ```
+
+对应的固定实验模板：
+
+- `configs/petrochina_smoke.toml`
+- `configs/petrochina_research.toml`

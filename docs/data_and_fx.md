@@ -1,5 +1,12 @@
 # 数据、FX 与缓存
 
+## 目录约定
+
+- `data/` 保留给手工维护或外部导入的输入文件，例如 `data/fx/*.csv`
+- `artifacts/cache/ah_pairs_trading/` 保存自动数据缓存和可选 stage cache
+- `artifacts/runs/<run-name>/` 保存每次运行生成的 CSV、图表和摘要
+- `configs/` 保存固定实验参数模板；当前先作为预设清单，后续 CLI 会支持 `--config`
+
 ## 数据输入优先级
 
 项目支持两种主要数据入口：
@@ -28,6 +35,7 @@ python scripts/fetch_fx_history.py \
 ```
 
 这个脚本会通过 Frankfurter 拉取 ECB-backed 的 `EUR->CNY` 和 `EUR->HKD` 参考汇率，再交叉换算成项目需要的 `HKD/CNY` 历史。
+建议继续把这类 FX CSV 放在 `data/fx/`，因为它属于用户可复现输入，而不是自动生成的运行产物。
 
 ## A/H 与 FX 的价格口径
 
@@ -130,7 +138,7 @@ date,fx_rate,eur_cny,eur_hkd
 ### 数据缓存现在怎么工作
 
 - A/H 与 online benchmark 不再按“某次请求区间结果”整块缓存
-- 缓存单位改成了 symbol 级主档，例如某个 A 股代码会在 `data/a_share_history/` 下维护一份累计历史
+- 缓存单位改成了 symbol 级主档，例如某个 A 股代码会在 `artifacts/cache/ah_pairs_trading/data/a_share_history/` 下维护一份累计历史
 - 每个主档旁边都有一份 JSON manifest，记录 `coverage_start`、`coverage_end`、`observation_count`、最近一次请求窗口等元数据
 - 如果新的回测窗口被现有主档完全覆盖，程序不会重新抓数
 - 如果新的窗口只在左边或右边超出已缓存区间，程序只会补抓缺口，再合并回主档
@@ -138,8 +146,9 @@ date,fx_rate,eur_cny,eur_hkd
 
 ### 当前存储分层
 
-- 原始市场数据主档目前仍然使用 `pickle + json manifest`
-- pipeline stage cache 也继续使用 `pickle`
+- 原始市场数据主档目前仍然使用 `pickle + json manifest`，默认位于 `artifacts/cache/ah_pairs_trading/data/...`
+- pipeline stage cache 也继续使用 `pickle`，默认位于 `artifacts/cache/ah_pairs_trading/pipeline/...`
+- 每次显式指定 `--output-dir` 时，运行产物更推荐统一写到 `artifacts/runs/<run-name>/`
 - 这样做是为了保持依赖轻量；仓库当前没有引入 Parquet/DuckDB 运行时依赖
 - 如果后面要做更大规模的多标的研究，再把原始数据主档迁到 Parquet、让 DuckDB 直接查 Parquet，会更合适
 

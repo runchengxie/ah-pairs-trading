@@ -42,7 +42,7 @@ htmlcov/
 .nox/
 .coverage
 .coverage.*
-.cache
+.cache/
 nosetests.xml
 coverage.xml
 *.cover
@@ -218,10 +218,12 @@ __marimo__/
 # Debugging
 full_project_source.txt
 
-# Generated research outputs
+# Generated caches and research outputs
+/artifacts/
 /outputs/
+*.pkl
 
-# Locally generated FX inputs
+# Locally generated FX inputs kept under user-managed `data/`
 /data/fx/*.csv
 !/data/fx/.gitkeep
 

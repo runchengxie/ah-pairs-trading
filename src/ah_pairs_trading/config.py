@@ -17,6 +17,9 @@ EntrySignalMode = Literal["zscore", "ret_spread_ema", "ret_spread_sma"]
 HedgeRatioMode = Literal["training", "rolling"]
 CointegrationGateMode = Literal["off", "significant"]
 
+DEFAULT_CACHE_DIR = Path("artifacts/cache/ah_pairs_trading")
+DEFAULT_RUNS_DIR = Path("artifacts/runs")
+
 
 @dataclass(slots=True, frozen=True)
 class SegmentWindow:
@@ -123,7 +126,7 @@ class PipelineConfig:
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
     costs: CostConfig = field(default_factory=CostConfig)
     rolling: RollingConfig = field(default_factory=RollingConfig)
-    cache_dir: Path | None = Path(".cache/ah_pairs_trading")
+    cache_dir: Path | None = DEFAULT_CACHE_DIR
     refresh_cache: bool = False
     resume_from_cache: bool = False
     output_dir: Path | None = None

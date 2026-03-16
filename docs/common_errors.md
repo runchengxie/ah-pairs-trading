@@ -1,5 +1,11 @@
 # 常见报错与处理
 
+当前目录约定：
+
+- `data/` 保留给手工维护或外部导入的输入文件
+- `artifacts/cache/ah_pairs_trading/` 是默认缓存目录
+- `artifacts/runs/<run-name>/` 是推荐的运行结果目录
+
 ## 1. `Training-sample cointegration is not significant ...`
 
 原因：
@@ -55,6 +61,7 @@ python scripts/fetch_fx_history.py \
   --output-csv data/fx/hkdcny_2018_2024.csv
 ```
 
+- 这类 FX CSV 仍建议保留在 `data/fx/`，主回测结果则统一写到 `artifacts/runs/<run-name>/`
 - 快速验证：临时提供 `--constant-fx-rate`
 
 ## 5. `601857/00883` 这种代码对直接被拦下
@@ -101,4 +108,4 @@ python scripts/fetch_fx_history.py \
 
 - 先安装项目依赖
 - 或改为显式传本地 CSV
-- 如果你怀疑本地 symbol 主档缓存已经过期或不一致，可以加 `--refresh-cache` 强制重建
+- 如果你怀疑 `artifacts/cache/ah_pairs_trading/` 下的 symbol 主档已经过期或不一致，可以加 `--refresh-cache` 强制重建
