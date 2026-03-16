@@ -53,6 +53,7 @@ EXCLUDE_DIRS_ROOT_ONLY: Set[str] = {
 #     "tests",
     ".ruff_cache",
     "out",
+    "outputs",
     "cache",
     ".venv",
     "venv",
