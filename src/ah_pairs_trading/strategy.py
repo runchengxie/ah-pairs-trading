@@ -9,7 +9,15 @@ import numpy as np
 import pandas as pd
 
 from .config import CostConfig, StrategyConfig
-from .metrics import compute_max_drawdown
+from .metrics import (
+    annualize_total_return,
+    compute_annualized_volatility,
+    compute_drawdown_stats,
+    compute_max_consecutive_losses,
+    compute_monthly_win_rate,
+    compute_sharpe_ratio,
+    compute_sortino_ratio,
+)
 
 
 @dataclass(slots=True)
@@ -19,26 +27,58 @@ class BacktestSummary:
     final_capital: float
     total_return: float
     annual_return: float
+    annual_volatility: float
     sharpe_ratio: float
+    sortino_ratio: float | None
     max_drawdown: float
+    calmar_ratio: float | None
+    max_drawdown_duration: int
+    recovery_days: int | None
     trade_count: int
     win_rate: float
+    payoff_ratio: float | None
+    profit_factor: float | None
+    avg_trade_pnl: float | None
     avg_holding_days: float
+    avg_win_pnl: float | None
+    avg_loss_pnl: float | None
+    gross_pnl: float
+    net_pnl: float
     total_costs: float
+    cost_to_gross_pnl: float | None
+    time_in_market: float
+    max_consecutive_losses: int
+    monthly_win_rate: float | None
 
-    def as_dict(self) -> dict[str, float | int]:
+    def as_dict(self) -> dict[str, float | int | None]:
         """Return a JSON-serializable summary."""
 
         return {
             "final_capital": self.final_capital,
             "total_return": self.total_return,
             "annual_return": self.annual_return,
+            "annual_volatility": self.annual_volatility,
             "sharpe_ratio": self.sharpe_ratio,
+            "sortino_ratio": self.sortino_ratio,
             "max_drawdown": self.max_drawdown,
+            "calmar_ratio": self.calmar_ratio,
+            "max_drawdown_duration": self.max_drawdown_duration,
+            "recovery_days": self.recovery_days,
             "trade_count": self.trade_count,
             "win_rate": self.win_rate,
+            "payoff_ratio": self.payoff_ratio,
+            "profit_factor": self.profit_factor,
+            "avg_trade_pnl": self.avg_trade_pnl,
             "avg_holding_days": self.avg_holding_days,
+            "avg_win_pnl": self.avg_win_pnl,
+            "avg_loss_pnl": self.avg_loss_pnl,
+            "gross_pnl": self.gross_pnl,
+            "net_pnl": self.net_pnl,
             "total_costs": self.total_costs,
+            "cost_to_gross_pnl": self.cost_to_gross_pnl,
+            "time_in_market": self.time_in_market,
+            "max_consecutive_losses": self.max_consecutive_losses,
+            "monthly_win_rate": self.monthly_win_rate,
         }
 
 
@@ -364,31 +404,75 @@ def backtest_relative_value_strategy(
 
     final_capital = float(equity_curve["capital"].iloc[-1])
     total_return = final_capital / strategy_config.initial_capital - 1.0
-    annual_return = 0.0
-    if len(equity_curve) > 0:
-        annual_return = float((1.0 + total_return) ** (252 / len(equity_curve)) - 1.0)
-
-    returns_std = float(equity_curve["returns"].std())
-    sharpe_ratio = 0.0
-    if returns_std > 0:
-        sharpe_ratio = float(np.sqrt(252) * equity_curve["returns"].mean() / returns_std)
+    annual_return = annualize_total_return(total_return, len(equity_curve))
+    annual_volatility = compute_annualized_volatility(equity_curve["returns"])
+    sharpe_ratio = compute_sharpe_ratio(equity_curve["returns"])
+    sortino_ratio = compute_sortino_ratio(equity_curve["returns"])
+    drawdown_stats = compute_drawdown_stats(equity_curve["capital"])
+    calmar_ratio = None
+    if drawdown_stats.max_drawdown < 0:
+        calmar_ratio = float(annual_return / abs(drawdown_stats.max_drawdown))
 
     win_rate = 0.0
     avg_holding_days = 0.0
+    payoff_ratio: float | None = None
+    profit_factor: float | None = None
+    avg_trade_pnl: float | None = None
+    avg_win_pnl: float | None = None
+    avg_loss_pnl: float | None = None
+    gross_pnl = 0.0
+    cost_to_gross_pnl: float | None = None
     if not trade_frame.empty:
         win_rate = float((trade_frame["net_pnl"] > 0).mean())
         avg_holding_days = float(trade_frame["holding_days"].mean())
+        avg_trade_pnl = float(trade_frame["net_pnl"].mean())
+        gross_pnl = float(trade_frame["gross_pnl"].sum())
+
+        winning_trades = trade_frame.loc[trade_frame["net_pnl"] > 0, "net_pnl"]
+        losing_trades = trade_frame.loc[trade_frame["net_pnl"] < 0, "net_pnl"]
+        if not winning_trades.empty:
+            avg_win_pnl = float(winning_trades.mean())
+        if not losing_trades.empty:
+            avg_loss_pnl = float(losing_trades.mean())
+        if avg_win_pnl is not None and avg_loss_pnl is not None and avg_loss_pnl != 0:
+            payoff_ratio = float(avg_win_pnl / abs(avg_loss_pnl))
+        if not winning_trades.empty and not losing_trades.empty:
+            gross_wins = float(winning_trades.sum())
+            gross_losses = float(losing_trades.sum())
+            if gross_losses != 0:
+                profit_factor = float(gross_wins / abs(gross_losses))
+        if gross_pnl != 0:
+            cost_to_gross_pnl = float(total_costs / abs(gross_pnl))
+
+    time_in_market = float((equity_curve["position"] != "flat").mean())
+    net_pnl = float(final_capital - strategy_config.initial_capital)
 
     summary = BacktestSummary(
         final_capital=final_capital,
         total_return=float(total_return),
         annual_return=annual_return,
+        annual_volatility=annual_volatility,
         sharpe_ratio=sharpe_ratio,
-        max_drawdown=compute_max_drawdown(equity_curve["capital"]),
+        sortino_ratio=sortino_ratio,
+        max_drawdown=drawdown_stats.max_drawdown,
+        calmar_ratio=calmar_ratio,
+        max_drawdown_duration=drawdown_stats.max_drawdown_duration,
+        recovery_days=drawdown_stats.recovery_days,
         trade_count=int(len(trade_frame)),
         win_rate=win_rate,
+        payoff_ratio=payoff_ratio,
+        profit_factor=profit_factor,
+        avg_trade_pnl=avg_trade_pnl,
         avg_holding_days=avg_holding_days,
+        avg_win_pnl=avg_win_pnl,
+        avg_loss_pnl=avg_loss_pnl,
+        gross_pnl=gross_pnl,
+        net_pnl=net_pnl,
         total_costs=float(total_costs),
+        cost_to_gross_pnl=cost_to_gross_pnl,
+        time_in_market=time_in_market,
+        max_consecutive_losses=compute_max_consecutive_losses(trade_frame),
+        monthly_win_rate=compute_monthly_win_rate(equity_curve["returns"]),
     )
     return BacktestResult(equity_curve=equity_curve, trades=trade_frame, summary=summary)
 

@@ -76,6 +76,8 @@ def test_long_cheaper_leg_backtest_generates_trades_and_positive_pnl() -> None:
     assert result.summary.final_capital > 100_000.0
     assert not result.trades.empty
     assert set(result.trades["direction"].unique()) <= {"long_a_only", "long_h_only"}
+    assert result.summary.annual_volatility >= 0.0
+    assert result.summary.time_in_market > 0.0
     assert {"capital", "returns", "spread", "zscore", "position", "gross_exposure"} <= set(result.equity_curve.columns)
 
 
@@ -118,10 +120,13 @@ def test_paired_backtest_and_grid_search_are_available() -> None:
     assert {
         "final_capital",
         "annual_return",
+        "annual_volatility",
         "sharpe_ratio",
         "max_drawdown",
+        "calmar_ratio",
         "trade_count",
         "win_rate",
+        "time_in_market",
         "total_costs",
     } <= set(grid.columns)
 

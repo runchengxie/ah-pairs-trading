@@ -164,7 +164,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     z_grid = tuple(float(value.strip()) for value in args.z_grid.split(",") if value.strip())
 
-    from .pipeline import run_ah_relative_value_pipeline
+    from .pipeline import build_pipeline_summary, render_pipeline_scorecard, run_ah_relative_value_pipeline
 
     config = PipelineConfig(
         a_symbol=args.a_symbol,
@@ -213,22 +213,5 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     result = run_ah_relative_value_pipeline(config)
-    print(
-        "\n".join(
-            [
-                f"Training cointegration p-value: {result.training_cointegration.p_value:.6f}",
-                f"Training hedge ratio: {result.training_cointegration.hedge_ratio:.6f}",
-                f"Residual half-life: {result.mean_reversion.half_life:.2f} days"
-                if result.mean_reversion.half_life is not None
-                else "Residual half-life: unavailable",
-                f"Execution mode: {config.strategy.execution_mode}",
-                f"Best entry z-score: {result.best_entry_z:.2f}",
-                f"Train Sharpe ratio: {result.train_backtest.summary.sharpe_ratio:.4f}",
-                f"Test Sharpe ratio: {result.test_backtest.summary.sharpe_ratio:.4f}",
-                f"Test max drawdown: {result.test_backtest.summary.max_drawdown:.2%}",
-                f"Test total costs: {result.test_backtest.summary.total_costs:.2f}",
-                f"Artifacts saved to: {args.output_dir}" if args.output_dir else "Artifacts were not written to disk.",
-            ]
-        )
-    )
+    print(render_pipeline_scorecard(build_pipeline_summary(config, result)))
     return 0

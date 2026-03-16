@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from ah_pairs_trading.analysis import CointegrationResult
 from ah_pairs_trading.config import CostConfig, DataConfig, PipelineConfig, StrategyConfig
-from ah_pairs_trading.pipeline import run_ah_relative_value_pipeline
+from ah_pairs_trading.pipeline import build_pipeline_summary, render_pipeline_scorecard, run_ah_relative_value_pipeline
 
 
 def make_raw_ah_frames(length: int = 260) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -36,7 +38,7 @@ def test_pipeline_runs_on_supplied_ah_frames() -> None:
     a_frame, h_frame, fx_frame = make_raw_ah_frames()
     config = PipelineConfig(
         a_symbol="601857",
-        h_symbol="00883",
+        h_symbol="00857",
         start_date="2020-01-01",
         end_date="2020-12-31",
         train_end_date="2020-09-30",
@@ -93,7 +95,7 @@ def test_pipeline_resume_from_cache_reuses_stage_outputs(tmp_path, monkeypatch) 
 
     config = PipelineConfig(
         a_symbol="601857",
-        h_symbol="00883",
+        h_symbol="00857",
         start_date="2020-01-01",
         end_date="2020-12-31",
         train_end_date="2020-09-30",
@@ -139,6 +141,83 @@ def test_pipeline_resume_from_cache_reuses_stage_outputs(tmp_path, monkeypatch) 
 
     assert first.best_entry_z == second.best_entry_z
     pd.testing.assert_frame_equal(first.rolling_cointegration, second.rolling_cointegration)
+
+
+def test_pipeline_summary_schema_and_scorecard_are_persisted(tmp_path) -> None:
+    """Saved artifacts should include a structured JSON summary and a readable scorecard."""
+
+    a_frame, h_frame, fx_frame = make_raw_ah_frames()
+    benchmark_frame = pd.DataFrame(
+        {
+            "date": a_frame["date"],
+            "close": np.linspace(100.0, 110.0, len(a_frame)),
+        }
+    )
+    output_dir = tmp_path / "artifacts"
+
+    config = PipelineConfig(
+        a_symbol="601857",
+        h_symbol="00857",
+        benchmark_symbol="CSI300",
+        benchmark_market="a",
+        start_date="2020-01-01",
+        end_date="2020-12-31",
+        train_end_date="2020-09-30",
+        require_significant_cointegration=False,
+        data=DataConfig(constant_fx_rate=None),
+        strategy=StrategyConfig(
+            entry_z_candidates=(0.8, 1.0),
+            exit_z=0.2,
+            stop_z=2.5,
+            z_window=20,
+            z_min_periods=20,
+            max_holding_days=15,
+            position_size_fraction=0.75,
+            initial_capital=100_000.0,
+            execution_mode="long_cheaper_leg_only",
+            a_lot_size=100,
+            h_lot_size=100,
+        ),
+        costs=CostConfig(
+            a_buy_cost_bps=0.0,
+            a_sell_cost_bps=0.0,
+            h_buy_cost_bps=0.0,
+            h_sell_cost_bps=0.0,
+            h_stamp_duty_bps=0.0,
+            fx_conversion_bps=0.0,
+        ),
+        output_dir=output_dir,
+    )
+
+    result = run_ah_relative_value_pipeline(
+        config,
+        a_frame=a_frame,
+        h_frame=h_frame,
+        fx_frame=fx_frame,
+        benchmark_frame=benchmark_frame,
+    )
+    summary_payload = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+    summary_markdown = (output_dir / "summary.md").read_text(encoding="utf-8")
+    terminal_scorecard = render_pipeline_scorecard(build_pipeline_summary(config, result))
+
+    assert {
+        "run_meta",
+        "instrument_meta",
+        "strategy_params",
+        "cost_assumptions",
+        "train_metrics",
+        "test_metrics",
+        "benchmark_metrics",
+        "rolling_metrics",
+        "diagnostics",
+    } <= set(summary_payload)
+    assert summary_payload["instrument_meta"]["benchmark_label"] == "CSI300"
+    assert summary_payload["test_metrics"]["annual_return"] is not None
+    assert summary_payload["benchmark_metrics"]["benchmark_total_return"] is not None
+    assert "Test Scorecard" in summary_markdown
+    assert "Benchmark Comparison" in summary_markdown
+    assert "Annual volatility" in terminal_scorecard
+    assert "Artifacts:" in terminal_scorecard
 
 
 def test_pipeline_cointegration_error_surfaces_context(monkeypatch) -> None:

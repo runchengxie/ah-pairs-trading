@@ -307,7 +307,14 @@ CSV 只要能识别日期列和收盘价列即可；英文列如 `date` / `close
 
 ## 输出内容
 
-指定 `--output-dir` 后会输出：
+每次 CLI run 结束后，终端会直接打印一份完整 scorecard，至少包括：
+
+- 基础信息：A/H 标的、时间区间、train/test 切分、execution mode、best entry z、benchmark
+- Train/Test 回测核心指标：`total_return`、`annual_return`、`annual_volatility`、`sharpe_ratio`、`sortino_ratio`、`max_drawdown`、`calmar_ratio`
+- 交易与成本指标：`trade_count`、`win_rate`、`profit_factor`、`payoff_ratio`、`avg_trade_pnl`、`avg_holding_days`、`total_costs`、`cost_to_gross_pnl`
+- 稳定性指标：`time_in_market`、`max_consecutive_losses`、`monthly_win_rate`、rolling Sharpe 摘要，以及在提供 benchmark 时的 rolling beta 摘要
+
+指定 `--output-dir` 后还会输出：
 
 - `aligned_prices.csv`
 - `model_prices.csv`
@@ -318,7 +325,15 @@ CSV 只要能识别日期列和收盘价列即可；英文列如 `date` / `close
 - `train_equity_curve.csv` / `test_equity_curve.csv`
 - `train_trades.csv` / `test_trades.csv`
 - `summary.json`
+- `summary.md`
 - 多张诊断图，包括 `log_prices.png`、`rolling_cointegration.png`、`z_grid_search.png`
+
+其中：
+
+- `summary.json`
+  是机器可读的结构化摘要，顶层分成 `run_meta`、`instrument_meta`、`strategy_params`、`cost_assumptions`、`train_metrics`、`test_metrics`、`benchmark_metrics`、`rolling_metrics`、`diagnostics`
+- `summary.md`
+  是和终端 scorecard 同口径的人类可读版本，适合直接打开看结果，不需要翻 CSV
 
 ## 测试
 
@@ -326,6 +341,12 @@ CSV 只要能识别日期列和收盘价列即可；英文列如 `date` / `close
 
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run pytest
+```
+
+如果你更习惯仓库内脚本，也可以用：
+
+```bash
+scripts/test.sh
 ```
 
 ## 说明

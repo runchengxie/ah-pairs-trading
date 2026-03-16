@@ -9,6 +9,9 @@ from typing import Literal
 
 ExecutionMode = Literal["long_cheaper_leg_only", "paired"]
 BenchmarkMarket = Literal["a", "h"]
+BenchmarkMode = Literal["auto", "external", "internal", "off"]
+InternalBenchmarkWeighting = Literal["hedge_ratio", "equal_weight"]
+SameIssuerCheck = Literal["strict", "warn", "off"]
 
 
 @dataclass(slots=True, frozen=True)
@@ -91,11 +94,14 @@ class PipelineConfig:
     h_symbol: str = "03968"
     benchmark_symbol: str | None = None
     benchmark_market: BenchmarkMarket = "a"
+    benchmark_mode: BenchmarkMode = "auto"
+    internal_benchmark_weighting: InternalBenchmarkWeighting = "hedge_ratio"
     start_date: str = "2018-01-01"
     end_date: str = "2024-12-31"
     train_end_date: str = "2022-12-31"
     alpha: float = 0.05
     require_significant_cointegration: bool = True
+    same_issuer_check: SameIssuerCheck = "strict"
     segments: tuple[SegmentWindow, ...] = field(
         default_factory=lambda: (
             SegmentWindow("2019-01-01", "2020-12-31", "2019_2020"),

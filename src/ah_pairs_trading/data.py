@@ -28,6 +28,19 @@ class LoadedPairData:
     benchmark_returns: pd.Series
 
 
+def _external_benchmark_label(
+    config: PipelineConfig,
+    benchmark_frame: pd.DataFrame | None,
+) -> str:
+    if config.benchmark_symbol is not None:
+        return config.benchmark_symbol
+    if config.data.benchmark_csv_path is not None:
+        return Path(config.data.benchmark_csv_path).stem
+    if benchmark_frame is not None:
+        return str(benchmark_frame.attrs.get("label", "benchmark"))
+    return "benchmark"
+
+
 def _find_column(frame: pd.DataFrame, aliases: tuple[str, ...]) -> str | None:
     alias_map = {column.lower(): column for column in frame.columns}
     for alias in aliases:
@@ -481,6 +494,8 @@ def load_ah_pair_data(
         )
         benchmark_close = resolved_benchmark["close"].astype(float).reindex(model_prices.index).ffill().dropna()
         benchmark_returns = convert_prices_to_returns(benchmark_close)
+        benchmark_returns.attrs["benchmark_label"] = _external_benchmark_label(config, benchmark_frame)
+        benchmark_returns.attrs["benchmark_source"] = "external"
 
     return LoadedPairData(
         aligned_prices=aligned_prices,

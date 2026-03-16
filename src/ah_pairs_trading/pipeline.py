@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +32,7 @@ from .data import (
     prepare_signal_frame,
     split_train_test,
 )
-from .metrics import prepare_comparison_frame, rolling_beta, rolling_sharpe
+from .metrics import prepare_comparison_frame, rolling_beta, rolling_sharpe, summarize_benchmark
 from .plotting import (
     plot_cumulative_returns,
     plot_equity_curve,
@@ -118,6 +119,238 @@ def _var_diagnostics_to_dict(result: VARDiagnostics) -> dict[str, Any]:
     }
 
 
+def _rolling_series_summary(series: pd.Series) -> dict[str, float | int | None]:
+    clean_series = series.dropna()
+    if clean_series.empty:
+        return {
+            "observations": 0,
+            "mean": None,
+            "median": None,
+            "min": None,
+            "max": None,
+        }
+    return {
+        "observations": int(len(clean_series)),
+        "mean": float(clean_series.mean()),
+        "median": float(clean_series.median()),
+        "min": float(clean_series.min()),
+        "max": float(clean_series.max()),
+    }
+
+
+def _benchmark_label(config: PipelineConfig, result: PipelineResult) -> str | None:
+    if config.benchmark_symbol is not None:
+        return config.benchmark_symbol
+    if config.data.benchmark_csv_path is not None:
+        return Path(config.data.benchmark_csv_path).stem
+    if not result.benchmark_comparison.empty:
+        return str(result.benchmark_comparison.attrs.get("benchmark_label", "benchmark"))
+    return None
+
+
+def build_pipeline_summary(config: PipelineConfig, result: PipelineResult) -> dict[str, Any]:
+    """Build a structured run summary for terminal display and saved artifacts."""
+
+    benchmark_metrics: dict[str, Any] | None = None
+    if not result.benchmark_comparison.empty:
+        benchmark_metrics = summarize_benchmark(
+            result.benchmark_comparison,
+            rolling_beta_series=result.rolling_beta,
+        ).as_dict()
+
+    return {
+        "run_meta": {
+            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "start_date": config.start_date,
+            "end_date": config.end_date,
+            "train_end_date": config.train_end_date,
+            "require_significant_cointegration": config.require_significant_cointegration,
+            "output_dir": str(config.output_dir) if config.output_dir is not None else None,
+        },
+        "instrument_meta": {
+            "a_symbol": config.a_symbol,
+            "h_symbol": config.h_symbol,
+            "share_ratio": config.data.share_ratio,
+            "benchmark_symbol": config.benchmark_symbol,
+            "benchmark_market": config.benchmark_market if _benchmark_label(config, result) is not None else None,
+            "benchmark_label": _benchmark_label(config, result),
+        },
+        "strategy_params": {
+            "entry_z_candidates": list(config.strategy.entry_z_candidates),
+            "best_entry_z": result.best_entry_z,
+            "exit_z": config.strategy.exit_z,
+            "stop_z": config.strategy.stop_z,
+            "z_window": config.strategy.z_window,
+            "z_min_periods": config.strategy.z_min_periods,
+            "max_holding_days": config.strategy.max_holding_days,
+            "position_size_fraction": config.strategy.position_size_fraction,
+            "initial_capital": config.strategy.initial_capital,
+            "objective": config.strategy.objective,
+            "execution_mode": config.strategy.execution_mode,
+            "a_lot_size": config.strategy.a_lot_size,
+            "h_lot_size": config.strategy.h_lot_size,
+        },
+        "cost_assumptions": {
+            "a_buy_cost_bps": config.costs.a_buy_cost_bps,
+            "a_sell_cost_bps": config.costs.a_sell_cost_bps,
+            "h_buy_cost_bps": config.costs.h_buy_cost_bps,
+            "h_sell_cost_bps": config.costs.h_sell_cost_bps,
+            "h_stamp_duty_bps": config.costs.h_stamp_duty_bps,
+            "fx_conversion_bps": config.costs.fx_conversion_bps,
+        },
+        "train_metrics": result.train_backtest.summary.as_dict(),
+        "test_metrics": result.test_backtest.summary.as_dict(),
+        "benchmark_metrics": benchmark_metrics,
+        "rolling_metrics": {
+            "sharpe_window": config.rolling.sharpe_window,
+            "beta_window": config.rolling.beta_window,
+            "test_rolling_sharpe": _rolling_series_summary(result.rolling_sharpe),
+            "test_rolling_beta": _rolling_series_summary(result.rolling_beta),
+        },
+        "diagnostics": {
+            "full_sample_cointegration": _cointegration_to_dict(result.full_sample_cointegration),
+            "training_cointegration": _cointegration_to_dict(result.training_cointegration),
+            "ecm": {
+                "error_correction_speed": result.ecm.error_correction_speed,
+                "error_correction_p_value": result.ecm.error_correction_p_value,
+                "coefficients": {key: float(value) for key, value in result.ecm.coefficients.items()},
+            },
+            "mean_reversion": _mean_reversion_to_dict(result.mean_reversion),
+            "matrix_ols": _matrix_ols_to_dict(result.matrix_ols),
+            "var_diagnostics": _var_diagnostics_to_dict(result.var_diagnostics),
+        },
+    }
+
+
+def _format_float(value: float | int | None, digits: int = 2) -> str:
+    if value is None:
+        return "n/a"
+    return f"{float(value):,.{digits}f}"
+
+
+def _format_percent(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:.2%}"
+
+
+def _format_days(value: int | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value} days"
+
+
+def _render_backtest_section(title: str, metrics: dict[str, Any]) -> list[str]:
+    return [
+        title,
+        f"- Final capital: {_format_float(metrics.get('final_capital'))}",
+        f"- Total return: {_format_percent(metrics.get('total_return'))}",
+        f"- Annual return: {_format_percent(metrics.get('annual_return'))}",
+        f"- Annual volatility: {_format_percent(metrics.get('annual_volatility'))}",
+        f"- Sharpe: {_format_float(metrics.get('sharpe_ratio'), digits=3)}",
+        f"- Sortino: {_format_float(metrics.get('sortino_ratio'), digits=3)}",
+        f"- Max drawdown: {_format_percent(metrics.get('max_drawdown'))}",
+        f"- Calmar: {_format_float(metrics.get('calmar_ratio'), digits=3)}",
+        f"- Max drawdown duration: {_format_days(metrics.get('max_drawdown_duration'))}",
+        f"- Recovery days: {_format_days(metrics.get('recovery_days'))}",
+        f"- Trades: {int(metrics.get('trade_count', 0))}",
+        f"- Win rate: {_format_percent(metrics.get('win_rate'))}",
+        f"- Payoff ratio: {_format_float(metrics.get('payoff_ratio'), digits=3)}",
+        f"- Profit factor: {_format_float(metrics.get('profit_factor'), digits=3)}",
+        f"- Avg trade PnL: {_format_float(metrics.get('avg_trade_pnl'))}",
+        f"- Avg holding days: {_format_float(metrics.get('avg_holding_days'), digits=1)}",
+        f"- Avg win PnL: {_format_float(metrics.get('avg_win_pnl'))}",
+        f"- Avg loss PnL: {_format_float(metrics.get('avg_loss_pnl'))}",
+        f"- Gross PnL: {_format_float(metrics.get('gross_pnl'))}",
+        f"- Net PnL: {_format_float(metrics.get('net_pnl'))}",
+        f"- Total costs: {_format_float(metrics.get('total_costs'))}",
+        f"- Cost / |gross PnL|: {_format_percent(metrics.get('cost_to_gross_pnl'))}",
+        f"- Time in market: {_format_percent(metrics.get('time_in_market'))}",
+        f"- Max consecutive losses: {int(metrics.get('max_consecutive_losses', 0))}",
+        f"- Monthly win rate: {_format_percent(metrics.get('monthly_win_rate'))}",
+    ]
+
+
+def render_pipeline_scorecard(summary: dict[str, Any]) -> str:
+    """Render a human-readable scorecard from a structured pipeline summary."""
+
+    run_meta = summary["run_meta"]
+    instrument_meta = summary["instrument_meta"]
+    strategy_params = summary["strategy_params"]
+    diagnostics = summary["diagnostics"]
+    benchmark_metrics = summary.get("benchmark_metrics")
+    rolling_metrics = summary["rolling_metrics"]
+    training_cointegration = diagnostics["training_cointegration"]
+    mean_reversion = diagnostics["mean_reversion"]
+
+    lines = [
+        "Run Overview",
+        f"- Pair: {instrument_meta['a_symbol']} / {instrument_meta['h_symbol']}",
+        f"- Window: {run_meta['start_date']} to {run_meta['end_date']}",
+        f"- Train/Test split: train <= {run_meta['train_end_date']}, test > {run_meta['train_end_date']}",
+        f"- Execution mode: {strategy_params['execution_mode']}",
+        f"- Best entry z-score: {_format_float(strategy_params['best_entry_z'], digits=2)}",
+        f"- Entry z candidates: {', '.join(str(value) for value in strategy_params['entry_z_candidates'])}",
+        f"- Benchmark: {instrument_meta['benchmark_label'] or 'not provided'}",
+        f"- Training cointegration p-value: {_format_float(training_cointegration['p_value'], digits=6)}",
+        f"- Training hedge ratio: {_format_float(training_cointegration['hedge_ratio'], digits=6)}",
+        (
+            f"- Residual half-life: {_format_float(mean_reversion['half_life'], digits=2)} days"
+            if mean_reversion["half_life"] is not None
+            else "- Residual half-life: unavailable"
+        ),
+        "",
+    ]
+    lines.extend(_render_backtest_section("Train Scorecard", summary["train_metrics"]))
+    lines.append("")
+    lines.extend(_render_backtest_section("Test Scorecard", summary["test_metrics"]))
+
+    if benchmark_metrics is not None:
+        lines.extend(
+            [
+                "",
+                "Benchmark Comparison",
+                f"- Benchmark label: {benchmark_metrics['benchmark_label']}",
+                f"- Benchmark observations: {benchmark_metrics['observations']}",
+                f"- Benchmark total return: {_format_percent(benchmark_metrics['benchmark_total_return'])}",
+                f"- Benchmark annual return: {_format_percent(benchmark_metrics['benchmark_annual_return'])}",
+                f"- Excess total return: {_format_percent(benchmark_metrics['excess_total_return'])}",
+                f"- Relative return vs benchmark: {_format_percent(benchmark_metrics['relative_return'])}",
+                f"- Tracking error: {_format_percent(benchmark_metrics['tracking_error'])}",
+                f"- Information ratio: {_format_float(benchmark_metrics['information_ratio'], digits=3)}",
+                f"- Beta: {_format_float(benchmark_metrics['beta'], digits=3)}",
+                f"- Alpha: {_format_percent(benchmark_metrics['alpha'])}",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "Rolling Diagnostics",
+            (
+                f"- Rolling Sharpe ({rolling_metrics['sharpe_window']}d): "
+                f"mean={_format_float(rolling_metrics['test_rolling_sharpe']['mean'], digits=3)}, "
+                f"median={_format_float(rolling_metrics['test_rolling_sharpe']['median'], digits=3)}, "
+                f"min={_format_float(rolling_metrics['test_rolling_sharpe']['min'], digits=3)}, "
+                f"max={_format_float(rolling_metrics['test_rolling_sharpe']['max'], digits=3)}"
+            ),
+            (
+                f"- Rolling Beta ({rolling_metrics['beta_window']}d): "
+                f"mean={_format_float(rolling_metrics['test_rolling_beta']['mean'], digits=3)}, "
+                f"median={_format_float(rolling_metrics['test_rolling_beta']['median'], digits=3)}, "
+                f"min={_format_float(rolling_metrics['test_rolling_beta']['min'], digits=3)}, "
+                f"max={_format_float(rolling_metrics['test_rolling_beta']['max'], digits=3)}"
+            ),
+            (
+                f"- Artifacts: {run_meta['output_dir']}"
+                if run_meta["output_dir"] is not None
+                else "- Artifacts: not written to disk"
+            ),
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _strategy_with_entry_z(strategy_config: StrategyConfig, entry_z: float) -> StrategyConfig:
     return StrategyConfig(
         entry_z_candidates=(entry_z,),
@@ -170,24 +403,9 @@ def _save_outputs(config: PipelineConfig, result: PipelineResult) -> None:
     _save_dataframe(result.rolling_sharpe, output_dir / "test_rolling_sharpe.csv")
     _save_dataframe(result.rolling_beta, output_dir / "test_rolling_beta.csv")
 
-    summary_payload = {
-        "full_sample_cointegration": _cointegration_to_dict(result.full_sample_cointegration),
-        "training_cointegration": _cointegration_to_dict(result.training_cointegration),
-        "ecm": {
-            "error_correction_speed": result.ecm.error_correction_speed,
-            "error_correction_p_value": result.ecm.error_correction_p_value,
-            "coefficients": {key: float(value) for key, value in result.ecm.coefficients.items()},
-        },
-        "mean_reversion": _mean_reversion_to_dict(result.mean_reversion),
-        "matrix_ols": _matrix_ols_to_dict(result.matrix_ols),
-        "var_diagnostics": _var_diagnostics_to_dict(result.var_diagnostics),
-        "best_entry_z": result.best_entry_z,
-        "train_backtest": result.train_backtest.summary.as_dict(),
-        "test_backtest": result.test_backtest.summary.as_dict(),
-        "execution_mode": config.strategy.execution_mode,
-        "share_ratio": config.data.share_ratio,
-    }
+    summary_payload = build_pipeline_summary(config, result)
     (output_dir / "summary.json").write_text(json.dumps(summary_payload, indent=2), encoding="utf-8")
+    _save_text(render_pipeline_scorecard(summary_payload), output_dir / "summary.md")
 
     _save_text(result.full_sample_cointegration.regression_summary_text, output_dir / "full_sample_ols_summary.txt")
     _save_text(result.training_cointegration.regression_summary_text, output_dir / "train_ols_summary.txt")
@@ -211,17 +429,18 @@ def _save_outputs(config: PipelineConfig, result: PipelineResult) -> None:
         "Test Rolling Sharpe Ratio",
         output_path=output_dir / "test_rolling_sharpe.png",
     )
-    if not result.benchmark_comparison.empty and config.benchmark_symbol is not None:
+    benchmark_label = _benchmark_label(config, result)
+    if not result.benchmark_comparison.empty and benchmark_label is not None:
         plot_cumulative_returns(
             result.benchmark_comparison,
-            benchmark_label=config.benchmark_symbol,
+            benchmark_label=benchmark_label,
             output_path=output_dir / "test_vs_benchmark.png",
         )
         plot_excess_returns(result.benchmark_comparison, output_path=output_dir / "test_excess_returns.png")
-    if not result.rolling_beta.empty and config.benchmark_symbol is not None:
+    if not result.rolling_beta.empty and benchmark_label is not None:
         plot_rolling_beta(
             result.rolling_beta,
-            benchmark_label=config.benchmark_symbol,
+            benchmark_label=benchmark_label,
             output_path=output_dir / "test_rolling_beta.png",
         )
 
