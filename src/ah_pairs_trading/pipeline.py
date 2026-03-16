@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import math
+import warnings
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,6 +45,7 @@ from .plotting import (
     plot_rolling_sharpe,
     plot_z_search,
 )
+from .pairs import validate_same_issuer_pair
 from .strategy import BacktestResult, backtest_relative_value_strategy, grid_search_entry_z
 
 
@@ -138,19 +141,113 @@ def _rolling_series_summary(series: pd.Series) -> dict[str, float | int | None]:
     }
 
 
+def _validate_pair_configuration(config: PipelineConfig) -> dict[str, str | None]:
+    validation = validate_same_issuer_pair(config.a_symbol, config.h_symbol)
+    if validation.status == "mismatch":
+        if config.same_issuer_check == "strict":
+            raise ValueError(validation.message)
+        if config.same_issuer_check == "warn":
+            warnings.warn(validation.message, stacklevel=2)
+    return validation.as_dict()
+
+
+def _internal_benchmark_weights(weighting: str, hedge_ratio: float) -> tuple[float, float]:
+    if weighting == "equal_weight":
+        return 0.5, 0.5
+
+    normalized_hedge_ratio = abs(float(hedge_ratio))
+    if not math.isfinite(normalized_hedge_ratio) or normalized_hedge_ratio <= 0:
+        return 0.5, 0.5
+    a_weight = 1.0 / (1.0 + normalized_hedge_ratio)
+    h_weight = normalized_hedge_ratio / (1.0 + normalized_hedge_ratio)
+    return a_weight, h_weight
+
+
+def _build_internal_benchmark_returns(
+    prices: pd.DataFrame,
+    *,
+    a_symbol: str,
+    h_symbol: str,
+    hedge_ratio: float,
+    weighting: str,
+) -> pd.Series:
+    benchmark_prices = prices[[a_symbol, h_symbol]].dropna()
+    if benchmark_prices.empty:
+        return pd.Series(dtype=float, name="benchmark_ret")
+
+    a_weight, h_weight = _internal_benchmark_weights(weighting, hedge_ratio)
+    normalized_a = benchmark_prices[a_symbol] / benchmark_prices[a_symbol].iloc[0]
+    normalized_h = benchmark_prices[h_symbol] / benchmark_prices[h_symbol].iloc[0]
+    basket_level = a_weight * normalized_a + h_weight * normalized_h
+    basket_returns = basket_level.astype(float).pct_change().rename("benchmark_ret").dropna()
+    basket_returns.attrs["benchmark_label"] = f"Internal A/H Basket ({weighting})"
+    basket_returns.attrs["benchmark_source"] = "internal"
+    basket_returns.attrs["benchmark_weighting"] = weighting
+    basket_returns.attrs["benchmark_weights"] = {
+        "a_weight": a_weight,
+        "h_weight": h_weight,
+    }
+    return basket_returns
+
+
+def _resolve_benchmark_returns(
+    config: PipelineConfig,
+    loaded_benchmark_returns: pd.Series,
+    *,
+    prices: pd.DataFrame,
+    training_hedge_ratio: float,
+) -> pd.Series:
+    has_external_benchmark = not loaded_benchmark_returns.empty
+
+    if config.benchmark_mode == "off":
+        return pd.Series(dtype=float, name="benchmark_ret")
+    if config.benchmark_mode == "external":
+        if has_external_benchmark:
+            return loaded_benchmark_returns
+        raise ValueError(
+            "`benchmark_mode='external'` requires `--benchmark`, `--benchmark-csv`, or a supplied benchmark frame."
+        )
+    if config.benchmark_mode == "internal":
+        return _build_internal_benchmark_returns(
+            prices,
+            a_symbol=config.a_symbol,
+            h_symbol=config.h_symbol,
+            hedge_ratio=training_hedge_ratio,
+            weighting=config.internal_benchmark_weighting,
+        )
+    if has_external_benchmark:
+        return loaded_benchmark_returns
+    if config.strategy.execution_mode == "long_cheaper_leg_only":
+        return _build_internal_benchmark_returns(
+            prices,
+            a_symbol=config.a_symbol,
+            h_symbol=config.h_symbol,
+            hedge_ratio=training_hedge_ratio,
+            weighting=config.internal_benchmark_weighting,
+        )
+    return pd.Series(dtype=float, name="benchmark_ret")
+
+
+def _benchmark_source(result: PipelineResult) -> str | None:
+    if result.benchmark_comparison.empty:
+        return None
+    return str(result.benchmark_comparison.attrs.get("benchmark_source", "benchmark"))
+
+
 def _benchmark_label(config: PipelineConfig, result: PipelineResult) -> str | None:
+    if not result.benchmark_comparison.empty:
+        return str(result.benchmark_comparison.attrs.get("benchmark_label", "benchmark"))
     if config.benchmark_symbol is not None:
         return config.benchmark_symbol
     if config.data.benchmark_csv_path is not None:
         return Path(config.data.benchmark_csv_path).stem
-    if not result.benchmark_comparison.empty:
-        return str(result.benchmark_comparison.attrs.get("benchmark_label", "benchmark"))
     return None
 
 
 def build_pipeline_summary(config: PipelineConfig, result: PipelineResult) -> dict[str, Any]:
     """Build a structured run summary for terminal display and saved artifacts."""
 
+    pair_validation = validate_same_issuer_pair(config.a_symbol, config.h_symbol).as_dict()
     benchmark_metrics: dict[str, Any] | None = None
     if not result.benchmark_comparison.empty:
         benchmark_metrics = summarize_benchmark(
@@ -171,9 +268,11 @@ def build_pipeline_summary(config: PipelineConfig, result: PipelineResult) -> di
             "a_symbol": config.a_symbol,
             "h_symbol": config.h_symbol,
             "share_ratio": config.data.share_ratio,
+            "pair_validation": pair_validation,
             "benchmark_symbol": config.benchmark_symbol,
             "benchmark_market": config.benchmark_market if _benchmark_label(config, result) is not None else None,
             "benchmark_label": _benchmark_label(config, result),
+            "benchmark_source": _benchmark_source(result),
         },
         "strategy_params": {
             "entry_z_candidates": list(config.strategy.entry_z_candidates),
@@ -189,6 +288,9 @@ def build_pipeline_summary(config: PipelineConfig, result: PipelineResult) -> di
             "execution_mode": config.strategy.execution_mode,
             "a_lot_size": config.strategy.a_lot_size,
             "h_lot_size": config.strategy.h_lot_size,
+            "benchmark_mode": config.benchmark_mode,
+            "internal_benchmark_weighting": config.internal_benchmark_weighting,
+            "same_issuer_check": config.same_issuer_check,
         },
         "cost_assumptions": {
             "a_buy_cost_bps": config.costs.a_buy_cost_bps,
@@ -282,16 +384,25 @@ def render_pipeline_scorecard(summary: dict[str, Any]) -> str:
     rolling_metrics = summary["rolling_metrics"]
     training_cointegration = diagnostics["training_cointegration"]
     mean_reversion = diagnostics["mean_reversion"]
+    pair_validation = instrument_meta["pair_validation"]
 
     lines = [
         "Run Overview",
         f"- Pair: {instrument_meta['a_symbol']} / {instrument_meta['h_symbol']}",
+        f"- Pair validation: {pair_validation['status']}",
+        (
+            f"- Registered issuer: {pair_validation['issuer_name']}"
+            if pair_validation["issuer_name"] is not None
+            else "- Registered issuer: unknown"
+        ),
         f"- Window: {run_meta['start_date']} to {run_meta['end_date']}",
         f"- Train/Test split: train <= {run_meta['train_end_date']}, test > {run_meta['train_end_date']}",
         f"- Execution mode: {strategy_params['execution_mode']}",
         f"- Best entry z-score: {_format_float(strategy_params['best_entry_z'], digits=2)}",
         f"- Entry z candidates: {', '.join(str(value) for value in strategy_params['entry_z_candidates'])}",
+        f"- Benchmark mode: {strategy_params['benchmark_mode']}",
         f"- Benchmark: {instrument_meta['benchmark_label'] or 'not provided'}",
+        f"- Benchmark source: {instrument_meta['benchmark_source'] or 'not provided'}",
         f"- Training cointegration p-value: {_format_float(training_cointegration['p_value'], digits=6)}",
         f"- Training hedge ratio: {_format_float(training_cointegration['hedge_ratio'], digits=6)}",
         (
@@ -459,6 +570,7 @@ def run_ah_relative_value_pipeline(
         config.cache_dir if config.resume_from_cache else None,
         refresh=config.refresh_cache,
     )
+    _validate_pair_configuration(config)
 
     loaded = load_ah_pair_data(
         config,
@@ -704,23 +816,34 @@ def run_ah_relative_value_pipeline(
         ),
     )
 
+    benchmark_returns = _resolve_benchmark_returns(
+        config,
+        loaded.benchmark_returns,
+        prices=prices,
+        training_hedge_ratio=training_cointegration.hedge_ratio,
+    )
+
     benchmark_comparison = pd.DataFrame()
     test_rolling_beta = pd.Series(dtype=float, name="rolling_beta")
-    if not loaded.benchmark_returns.empty:
+    if not benchmark_returns.empty:
+        benchmark_label = str(benchmark_returns.attrs.get("benchmark_label", "benchmark"))
+        benchmark_source = str(benchmark_returns.attrs.get("benchmark_source", "benchmark"))
         benchmark_comparison = stage_cache.load_or_compute(
             "benchmark_comparison",
             {
                 "version": _PIPELINE_CACHE_VERSION,
                 "strategy_returns_digest": frame_digest(test_backtest.equity_curve["returns"]),
-                "benchmark_returns_digest": frame_digest(loaded.benchmark_returns),
-                "benchmark_label": config.benchmark_symbol or "benchmark",
+                "benchmark_returns_digest": frame_digest(benchmark_returns),
+                "benchmark_label": benchmark_label,
+                "benchmark_source": benchmark_source,
             },
             lambda: prepare_comparison_frame(
                 strategy_returns=test_backtest.equity_curve["returns"],
-                benchmark_returns=loaded.benchmark_returns,
-                benchmark_label=config.benchmark_symbol or "benchmark",
+                benchmark_returns=benchmark_returns,
+                benchmark_label=benchmark_label,
             ),
         )
+        benchmark_comparison.attrs["benchmark_source"] = benchmark_source
         test_rolling_beta = stage_cache.load_or_compute(
             "rolling_beta",
             {

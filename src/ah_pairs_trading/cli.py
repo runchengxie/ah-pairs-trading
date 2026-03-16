@@ -21,6 +21,22 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("a", "h"),
         help="Market of the optional benchmark symbol.",
     )
+    parser.add_argument(
+        "--benchmark-mode",
+        default="auto",
+        choices=("auto", "external", "internal", "off"),
+        help=(
+            "How the reporting benchmark is resolved. "
+            "`auto` prefers an explicit external benchmark and otherwise uses an internal A/H basket "
+            "for `long_cheaper_leg_only`."
+        ),
+    )
+    parser.add_argument(
+        "--internal-benchmark-weighting",
+        default="hedge_ratio",
+        choices=("hedge_ratio", "equal_weight"),
+        help="Weighting used when the internal passive A/H basket benchmark is enabled.",
+    )
     parser.add_argument("--start-date", default="2018-01-01", help="Analysis start date in YYYY-MM-DD format.")
     parser.add_argument("--end-date", default="2024-12-31", help="Analysis end date in YYYY-MM-DD format.")
     parser.add_argument(
@@ -128,6 +144,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Allow the pipeline to continue even if training-sample cointegration is not significant.",
     )
     parser.add_argument(
+        "--same-issuer-check",
+        default="strict",
+        choices=("strict", "warn", "off"),
+        help=(
+            "Validate the A/H symbols against the built-in same-issuer registry. "
+            "`strict` rejects known mismatches such as 601857/00883."
+        ),
+    )
+    parser.add_argument(
         "--cache-dir",
         type=Path,
         default=Path(".cache/ah_pairs_trading"),
@@ -171,10 +196,13 @@ def main(argv: list[str] | None = None) -> int:
         h_symbol=args.h_symbol,
         benchmark_symbol=args.benchmark,
         benchmark_market=args.benchmark_market,
+        benchmark_mode=args.benchmark_mode,
+        internal_benchmark_weighting=args.internal_benchmark_weighting,
         start_date=args.start_date,
         end_date=args.end_date,
         train_end_date=args.train_end_date,
         require_significant_cointegration=not args.allow_non_coint,
+        same_issuer_check=args.same_issuer_check,
         data=DataConfig(
             a_csv_path=args.a_csv,
             h_csv_path=args.h_csv,

@@ -1,15 +1,17 @@
 # A/H 相对价值研究平台
 
-这个仓库已经从原来的美股双边配对 demo，改成了更贴近大陆居民账户约束的 **A/H 相对价值研究框架**。
+这个仓库已经从原来的美股双边配对 demo，改成了更贴近大陆居民账户约束的A/H 相对价值研究框架（也就是暂时不考虑不允许做空场景）。
 
 主流程现在是：
 
 - 自动拉取同一发行人的 A 股和 H 股历史
+- 对内置 registry 里已知的 A/H 代码对做 `same issuer` 校验；像 `601857/00883` 这类已知错配会直接拦下
 - 把 H 股价格转换到人民币口径
 - 在训练期估计协整关系、截距和 hedge ratio
 - 对残差做滚动标准化，生成 z-score
 - 默认执行 `long_cheaper_leg_only`
 - 只有显式切到 `paired` 时，才双腿同时持仓
+- `long_cheaper_leg_only` 在 `--benchmark-mode auto` 下会自动生成内部 A/H 被动 basket benchmark
 - 回测里显式计入 lot size、最大持有期和交易成本
 
 ## 先看推荐用法
@@ -32,6 +34,7 @@ pairs-trading \
 - FX 不在线拉取，所以这里临时用 `--constant-fx-rate 0.92`
 - 即使训练集协整不显著，也继续跑完整条 pipeline
 - 没有显式传 `--execution-mode` 时，默认是 `long_cheaper_leg_only`
+- 没有显式传 `--benchmark` 时，默认会为 `long_cheaper_leg_only` 生成内部 A/H 被动 benchmark
 
 如果你要跑双腿配对版本，必须显式加上：
 
@@ -68,9 +71,9 @@ python main.py ...
 - `strategy.py`
   支持 `long_cheaper_leg_only` 和 `paired` 两种执行模式，并支持显式成本参数。
 - `pipeline.py`
-  用训练集估计参数，在全样本上生成滚动 z-score，再分别输出训练集和测试集结果。
+  用训练集估计参数，在全样本上生成滚动 z-score，再分别输出训练集和测试集结果，并支持自动内部 benchmark 与 same-issuer 校验。
 - `cli.py`
-  提供 A/H、FX、成本、缓存和执行模式参数。
+  提供 A/H、FX、benchmark、same-issuer 校验、缓存和执行模式参数。
 
 ## 安装
 
@@ -270,6 +273,18 @@ CSV 只要能识别日期列和收盘价列即可；英文列如 `date` / `close
 
 - 如果你要双腿模式，请把 `--execution-mode paired` 写回命令里
 
+### 5. `601857/00883` 这种代码对直接被拦下
+
+原因：
+
+- 内置 A/H registry 识别出这是已知的跨发行人错配
+- `601857` 对应 PetroChina，`00883` 对应 CNOOC
+
+解决：
+
+- 如果你要做“同发行人 A/H 相对价值”，把 H 股改成正确映射
+- 如果你有意做跨公司板块配对研究，可以临时加 `--same-issuer-check warn` 或 `--same-issuer-check off`
+
 ## 重要参数
 
 - `--a-symbol` / `--h-symbol`
@@ -284,6 +299,12 @@ CSV 只要能识别日期列和收盘价列即可；英文列如 `date` / `close
   你自己的 HKD/CNY 历史；正式回测更推荐这个。
 - `--execution-mode`
   `long_cheaper_leg_only` 或 `paired`；默认是 `long_cheaper_leg_only`。
+- `--same-issuer-check`
+  `strict` / `warn` / `off`；默认 `strict`，会拦住内置 registry 里已知的跨发行人错配。
+- `--benchmark-mode`
+  `auto` / `external` / `internal` / `off`；默认 `auto`。`auto` 会优先使用显式传入的 benchmark，否则在 `long_cheaper_leg_only` 下自动生成内部 A/H 被动 benchmark。
+- `--internal-benchmark-weighting`
+  内部 benchmark 的权重口径；支持 `hedge_ratio` 和 `equal_weight`。
 - `--z-window`
   滚动标准化窗口，默认 `120`。
 - `--z-grid`
@@ -309,7 +330,7 @@ CSV 只要能识别日期列和收盘价列即可；英文列如 `date` / `close
 
 每次 CLI run 结束后，终端会直接打印一份完整 scorecard，至少包括：
 
-- 基础信息：A/H 标的、时间区间、train/test 切分、execution mode、best entry z、benchmark
+- 基础信息：A/H 标的、pair validation 状态、时间区间、train/test 切分、execution mode、best entry z、benchmark
 - Train/Test 回测核心指标：`total_return`、`annual_return`、`annual_volatility`、`sharpe_ratio`、`sortino_ratio`、`max_drawdown`、`calmar_ratio`
 - 交易与成本指标：`trade_count`、`win_rate`、`profit_factor`、`payoff_ratio`、`avg_trade_pnl`、`avg_holding_days`、`total_costs`、`cost_to_gross_pnl`
 - 稳定性指标：`time_in_market`、`max_consecutive_losses`、`monthly_win_rate`、rolling Sharpe 摘要，以及在提供 benchmark 时的 rolling beta 摘要
@@ -331,13 +352,44 @@ CSV 只要能识别日期列和收盘价列即可；英文列如 `date` / `close
 其中：
 
 - `summary.json`
-  是机器可读的结构化摘要，顶层分成 `run_meta`、`instrument_meta`、`strategy_params`、`cost_assumptions`、`train_metrics`、`test_metrics`、`benchmark_metrics`、`rolling_metrics`、`diagnostics`
+  是机器可读的结构化摘要，顶层分成 `run_meta`、`instrument_meta`、`strategy_params`、`cost_assumptions`、`train_metrics`、`test_metrics`、`benchmark_metrics`、`rolling_metrics`、`diagnostics`；其中 `instrument_meta` 里会写出 `pair_validation`、`benchmark_source`
 - `summary.md`
   是和终端 scorecard 同口径的人类可读版本，适合直接打开看结果，不需要翻 CSV
 
+## Benchmark 约定
+
+- `paired` 模式下，benchmark 默认不是核心；如果没显式传 benchmark，`--benchmark-mode auto` 不会自动生成内部基准
+- `long_cheaper_leg_only` 下，`--benchmark-mode auto` 会生成 `Internal A/H Basket (hedge_ratio)`，用于和被动持有同一发行人 A/H 篮子做对比
+- 如果你已经有市场 benchmark，例如 `CSI300` 或 `HSCEI`，显式传 `--benchmark` 或 `--benchmark-csv` 后，外部 benchmark 会优先覆盖自动内部基准
+
+## 数据 QA / 双源 spot-check
+
+不建议把 AkShare/efinance 双源校验塞进每次回测主流程，但建议做成单独 QA。仓库现在提供了一个轻量 spot-check 脚本，适合对两份本地 CSV 做覆盖率和收盘价偏差检查：
+
+```bash
+python scripts/compare_histories.py \
+  --left-csv /path/to/akshare_601857.csv \
+  --right-csv /path/to/efinance_601857.csv \
+  --left-label akshare \
+  --right-label efinance
+```
+
+它会直接输出：
+
+- 日期重叠覆盖率
+- 双边独有日期数量
+- 收盘价最大/平均绝对偏差
+- 收盘价最大/平均相对偏差
+
 ## 测试
 
-测试使用合成 A/H 数据，不依赖联网。
+测试使用合成 A/H 数据，不依赖联网，并覆盖：
+
+- same-issuer registry 校验
+- `long_cheaper_leg_only` 自动内部 benchmark
+- summary schema / scorecard 持久化
+- CLI 参数透传
+- 数据 QA spot-check
 
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run pytest
@@ -348,6 +400,8 @@ UV_CACHE_DIR=/tmp/uv-cache uv run pytest
 ```bash
 scripts/test.sh
 ```
+
+脚本会优先走 `uv run pytest`，没有 `uv` 时再回退到 `python -m pytest`。
 
 ## 说明
 

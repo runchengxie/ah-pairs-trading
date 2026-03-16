@@ -80,6 +80,9 @@ def test_pipeline_runs_on_supplied_ah_frames() -> None:
     assert np.isfinite(result.training_cointegration.p_value)
     assert result.train_backtest.summary.trade_count > 0
     assert result.test_backtest.summary.trade_count > 0
+    assert not result.benchmark_comparison.empty
+    assert result.benchmark_comparison.attrs["benchmark_source"] == "internal"
+    assert result.benchmark_comparison.attrs["benchmark_label"] == "Internal A/H Basket (hedge_ratio)"
 
 
 def test_pipeline_resume_from_cache_reuses_stage_outputs(tmp_path, monkeypatch) -> None:
@@ -212,11 +215,14 @@ def test_pipeline_summary_schema_and_scorecard_are_persisted(tmp_path) -> None:
         "diagnostics",
     } <= set(summary_payload)
     assert summary_payload["instrument_meta"]["benchmark_label"] == "CSI300"
+    assert summary_payload["instrument_meta"]["benchmark_source"] == "external"
+    assert summary_payload["instrument_meta"]["pair_validation"]["status"] == "matched"
     assert summary_payload["test_metrics"]["annual_return"] is not None
     assert summary_payload["benchmark_metrics"]["benchmark_total_return"] is not None
     assert "Test Scorecard" in summary_markdown
     assert "Benchmark Comparison" in summary_markdown
     assert "Annual volatility" in terminal_scorecard
+    assert "Pair validation: matched" in terminal_scorecard
     assert "Artifacts:" in terminal_scorecard
 
 
@@ -291,3 +297,98 @@ def test_pipeline_cointegration_error_surfaces_context(monkeypatch) -> None:
     assert "--allow-non-coint" in message
     assert "--resume-from-cache" in message
     assert "same issuer" in message
+
+
+def test_pipeline_rejects_known_cross_issuer_pair_before_backtest() -> None:
+    """Known registry mismatches should fail fast in strict mode."""
+
+    a_frame, h_frame, fx_frame = make_raw_ah_frames()
+    config = PipelineConfig(
+        a_symbol="601857",
+        h_symbol="00883",
+        start_date="2020-01-01",
+        end_date="2020-12-31",
+        train_end_date="2020-09-30",
+        require_significant_cointegration=False,
+        data=DataConfig(constant_fx_rate=None),
+        strategy=StrategyConfig(
+            entry_z_candidates=(0.8, 1.0),
+            exit_z=0.2,
+            stop_z=2.5,
+            z_window=20,
+            z_min_periods=20,
+            max_holding_days=15,
+            position_size_fraction=0.75,
+            initial_capital=100_000.0,
+            execution_mode="long_cheaper_leg_only",
+            a_lot_size=100,
+            h_lot_size=100,
+        ),
+        costs=CostConfig(
+            a_buy_cost_bps=0.0,
+            a_sell_cost_bps=0.0,
+            h_buy_cost_bps=0.0,
+            h_sell_cost_bps=0.0,
+            h_stamp_duty_bps=0.0,
+            fx_conversion_bps=0.0,
+        ),
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        run_ah_relative_value_pipeline(
+            config,
+            a_frame=a_frame,
+            h_frame=h_frame,
+            fx_frame=fx_frame,
+        )
+
+    message = str(exc_info.value)
+    assert "same-issuer mismatch" in message
+    assert "PetroChina" in message
+    assert "CNOOC" in message
+
+
+def test_paired_mode_without_explicit_benchmark_does_not_auto_generate_internal_reference() -> None:
+    """Paired mode should stay benchmark-free in auto mode unless the user opts in."""
+
+    a_frame, h_frame, fx_frame = make_raw_ah_frames()
+    config = PipelineConfig(
+        a_symbol="601857",
+        h_symbol="00857",
+        start_date="2020-01-01",
+        end_date="2020-12-31",
+        train_end_date="2020-09-30",
+        require_significant_cointegration=False,
+        data=DataConfig(constant_fx_rate=None),
+        strategy=StrategyConfig(
+            entry_z_candidates=(0.8, 1.0),
+            exit_z=0.2,
+            stop_z=2.5,
+            z_window=20,
+            z_min_periods=20,
+            max_holding_days=15,
+            position_size_fraction=0.75,
+            initial_capital=100_000.0,
+            execution_mode="paired",
+            a_lot_size=100,
+            h_lot_size=100,
+        ),
+        costs=CostConfig(
+            a_buy_cost_bps=0.0,
+            a_sell_cost_bps=0.0,
+            h_buy_cost_bps=0.0,
+            h_sell_cost_bps=0.0,
+            h_stamp_duty_bps=0.0,
+            fx_conversion_bps=0.0,
+        ),
+    )
+
+    result = run_ah_relative_value_pipeline(
+        config,
+        a_frame=a_frame,
+        h_frame=h_frame,
+        fx_frame=fx_frame,
+    )
+
+    assert result.benchmark_comparison.empty
+    assert result.rolling_beta.empty
