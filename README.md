@@ -127,7 +127,7 @@ Execution mode: long_cheaper_leg_only
 
 ### 3. 做严格筛选时，再去掉 `--allow-non-coint`
 
-默认 guardrail 是开启的，也就是：
+默认协整检验是开启的，也就是：
 
 - 训练集协整显著，继续跑
 - 训练集协整不显著，直接中止
@@ -138,7 +138,7 @@ Execution mode: long_cheaper_leg_only
 Training-sample cointegration is not significant ...
 ```
 
-它不是缓存坏了，也不是命令没生效，而是 guardrail 在工作。此时有两个选择：
+意味着协整检验处于开启状态。此时有两个选择：
 
 - 你只是想先跑通流程或做宽松探索：加 `--allow-non-coint`
 - 你要做更严格的标的筛选：不要加，让它中止，然后换 A/H 代码对或重设研究窗口
@@ -154,11 +154,6 @@ Training-sample cointegration is not significant ...
 - 本地没有缓存时，才会用 AkShare 在线拉取 A/H 历史
 - 当前只有 A/H 历史支持在线拉取和自动缓存
 - FX 不会自动联网拉取，必须自己提供 `--fx-csv` 或 `--constant-fx-rate`
-
-这意味着：
-
-- 现在通常不需要一个单独的“先下载再运行”步骤
-- 也不需要仓库内置 `data/600036.csv` 这种示例文件才能使用主流程
 
 ### 显式传本地 CSV 时的行为
 
@@ -186,7 +181,7 @@ Training-sample cointegration is not significant ...
 
 - 长任务中断后，复用已经完成的 pipeline 阶段
 
-它的作用不是：
+这个功能无法做到：
 
 - 绕过训练集协整显著性检查
 - 改变数据源优先级
@@ -282,7 +277,7 @@ CSV 只要能识别日期列和收盘价列即可；英文列如 `date` / `close
 
 解决：
 
-- 如果你要做“同发行人 A/H 相对价值”，把 H 股改成正确映射
+- 如果你要做同发行人 A/H 相对价值，把 H 股改成正确映射
 - 如果你有意做跨公司板块配对研究，可以临时加 `--same-issuer-check warn` 或 `--same-issuer-check off`
 
 ## 重要参数
@@ -405,6 +400,6 @@ scripts/test.sh
 
 ## 说明
 
-- 这个仓库现在更适合作为 **A/H relative value research platform**，不是“默认可做空的市场中性模板”。
+- 这个仓库主要作为AH股相对价值投研框架，市场中性策略目前暂未落地。
 - `analysis.py` 的统计分析层基本保留；数据层、配置层和回测执行层已经按 A/H 约束重写。
-- 原始设计文档还在 [docs/project_design_v1.0.md](/home/richard/code/ah-pairs-trading/docs/project_design_v1.0.md)，但它不再代表当前主流程。
+- 原始设计文档在 [docs/project_design_v1.0.md](/home/richard/code/ah-pairs-trading/docs/project_design_v1.0.md)，仅作参考，不代表当前主流程。
