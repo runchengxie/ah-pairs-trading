@@ -228,13 +228,15 @@ def run_rolling_cointegration(
             {
                 "window_end": window_frame.index[-1],
                 "p_value": result.p_value,
+                "significant": result.significant,
+                "intercept": result.intercept,
                 "hedge_ratio": result.hedge_ratio,
                 "residual_std": result.residual_std,
             }
         )
 
     if not rows:
-        return pd.DataFrame(columns=["p_value", "hedge_ratio", "residual_std"])
+        return pd.DataFrame(columns=["p_value", "significant", "intercept", "hedge_ratio", "residual_std"])
 
     return pd.DataFrame(rows).set_index("window_end")
 

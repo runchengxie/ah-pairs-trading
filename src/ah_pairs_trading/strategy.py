@@ -292,6 +292,12 @@ def _return_signal_column(strategy_config: StrategyConfig) -> str | None:
     return "ret_spread_sma"
 
 
+def _cointegration_gate_column(strategy_config: StrategyConfig) -> str | None:
+    if strategy_config.cointegration_gate_mode == "off":
+        return None
+    return "cointegration_gate_pass"
+
+
 def _passes_return_filter(row: pd.Series, strategy_config: StrategyConfig) -> bool:
     filter_column = _return_filter_pass_column(strategy_config)
     if filter_column is None:
@@ -301,6 +307,24 @@ def _passes_return_filter(row: pd.Series, strategy_config: StrategyConfig) -> bo
     if pd.isna(filter_value):
         return False
     return bool(filter_value)
+
+
+def _passes_cointegration_gate(row: pd.Series, strategy_config: StrategyConfig) -> bool:
+    gate_column = _cointegration_gate_column(strategy_config)
+    if gate_column is None:
+        return True
+
+    gate_value = row.get(gate_column, pd.NA)
+    if pd.isna(gate_value):
+        return False
+    return bool(gate_value)
+
+
+def _effective_hedge_ratio(row: pd.Series, fallback_hedge_ratio: float) -> float:
+    row_hedge_ratio = row.get("hedge_ratio", np.nan)
+    if pd.notna(row_hedge_ratio):
+        return float(row_hedge_ratio)
+    return float(fallback_hedge_ratio)
 
 
 def backtest_relative_value_strategy(
@@ -335,6 +359,12 @@ def backtest_relative_value_strategy(
             f"The signal frame is missing '{return_filter_column}' required by return_filter_mode="
             f"'{strategy_config.return_filter_mode}'."
         )
+    cointegration_gate_column = _cointegration_gate_column(strategy_config)
+    if cointegration_gate_column is not None and cointegration_gate_column not in signal_frame.columns:
+        raise ValueError(
+            f"The signal frame is missing '{cointegration_gate_column}' required by cointegration_gate_mode="
+            f"'{strategy_config.cointegration_gate_mode}'."
+        )
 
     open_position: PositionState | None = None
     realized_pnl = 0.0
@@ -350,6 +380,8 @@ def backtest_relative_value_strategy(
         raw_zscore = float(row["zscore"]) if pd.notna(row["zscore"]) else np.nan
         spread = float(row["spread"]) if pd.notna(row["spread"]) else np.nan
         cheap_leg = row.get(cheap_leg_column, "flat")
+        row_hedge_ratio = _effective_hedge_ratio(row, hedge_ratio)
+        row_intercept = float(row["intercept"]) if pd.notna(row.get("intercept", np.nan)) else np.nan
         return_signal = (
             float(row[return_signal_column])
             if return_signal_column is not None and pd.notna(row.get(return_signal_column))
@@ -360,6 +392,22 @@ def backtest_relative_value_strategy(
             if return_filter_column is not None and pd.notna(row.get(return_filter_column))
             else pd.NA
         )
+        cointegration_p_value = (
+            float(row["cointegration_p_value"])
+            if "cointegration_p_value" in signal_frame.columns and pd.notna(row.get("cointegration_p_value"))
+            else np.nan
+        )
+        cointegration_significant = (
+            bool(row["cointegration_significant"])
+            if "cointegration_significant" in signal_frame.columns and pd.notna(row.get("cointegration_significant"))
+            else pd.NA
+        )
+        cointegration_gate_pass = (
+            bool(row[cointegration_gate_column])
+            if cointegration_gate_column is not None and pd.notna(row.get(cointegration_gate_column))
+            else pd.NA
+        )
+        gate_allows_trading = _passes_cointegration_gate(row, strategy_config)
         unrealized_pnl = 0.0
         closed_this_bar = False
 
@@ -367,7 +415,9 @@ def backtest_relative_value_strategy(
             unrealized_pnl = _mark_to_market(open_position, a_price, h_price)
             holding_days = row_number - open_position.entry_row_number
             exit_reason: str | None = None
-            if pd.notna(signal_value) and abs(signal_value) <= strategy_config.exit_z:
+            if not gate_allows_trading:
+                exit_reason = "cointegration_breakdown"
+            elif pd.notna(signal_value) and abs(signal_value) <= strategy_config.exit_z:
                 exit_reason = "mean_reversion"
             elif pd.notna(signal_value) and abs(signal_value) >= strategy_config.stop_z:
                 exit_reason = "stop_loss"
@@ -413,6 +463,7 @@ def backtest_relative_value_strategy(
             and row_number != last_row_index
             and pd.notna(signal_value)
             and abs(signal_value) >= min(strategy_config.entry_z_candidates)
+            and gate_allows_trading
             and _passes_return_filter(row, strategy_config)
         ):
             candidate = _build_position(
@@ -422,7 +473,7 @@ def backtest_relative_value_strategy(
                 a_price=a_price,
                 h_price=h_price,
                 capital=available_capital,
-                hedge_ratio=hedge_ratio,
+                hedge_ratio=row_hedge_ratio,
                 strategy_config=strategy_config,
                 cost_config=cost_config,
             )
@@ -440,9 +491,14 @@ def backtest_relative_value_strategy(
                 "spread": spread,
                 "zscore": raw_zscore,
                 "signal_score": signal_value,
+                "intercept": row_intercept,
+                "hedge_ratio": row_hedge_ratio,
                 "cheap_leg": cheap_leg,
                 "return_signal": return_signal,
                 "return_filter_pass": return_filter_pass,
+                "cointegration_p_value": cointegration_p_value,
+                "cointegration_significant": cointegration_significant,
+                "cointegration_gate_pass": cointegration_gate_pass,
                 "position": "flat" if open_position is None else open_position.direction,
                 "gross_exposure": 0.0 if open_position is None else _gross_exposure(open_position, a_price, h_price),
             }
@@ -574,7 +630,9 @@ def grid_search_entry_z(
             objective=strategy_config.objective,
             execution_mode=strategy_config.execution_mode,
             entry_signal_mode=strategy_config.entry_signal_mode,
+            hedge_ratio_mode=strategy_config.hedge_ratio_mode,
             return_filter_mode=strategy_config.return_filter_mode,
+            cointegration_gate_mode=strategy_config.cointegration_gate_mode,
             return_filter_window=strategy_config.return_filter_window,
             return_filter_min_periods=strategy_config.return_filter_min_periods,
             a_lot_size=strategy_config.a_lot_size,

@@ -38,8 +38,12 @@
   计算滚动 z-score 所需的最小样本数，默认 `60`
 - `--entry-signal-mode`
   主信号模式，支持 `zscore`、`ret_spread_ema`、`ret_spread_sma`
+- `--hedge-ratio-mode`
+  spread 构造和 `paired` 仓位 sizing 所用的对冲系数；支持 `training`、`rolling`
 - `--return-filter-mode`
   只在 `entry_signal_mode=zscore` 下生效；支持 `off`、`ema`、`sma`
+- `--cointegration-gate-mode`
+  滚动协整 gate；支持 `off`、`significant`。`significant` 只在最新滚动窗口协整仍显著时允许交易，并在失效时强平
 - `--return-filter-window`
   return-spread 平滑窗口，默认 `10`
 - `--return-filter-min-periods`
@@ -137,5 +141,7 @@ pairs-trading \
   --a-symbol 601857 \
   --h-symbol 00857 \
   --fx-csv data/fx/hkdcny_2018_2024.csv \
+  --hedge-ratio-mode rolling \
+  --cointegration-gate-mode significant \
   --output-dir outputs/petrochina_ah_research
 ```

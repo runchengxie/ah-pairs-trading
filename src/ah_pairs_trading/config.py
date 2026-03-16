@@ -14,6 +14,8 @@ InternalBenchmarkWeighting = Literal["hedge_ratio", "equal_weight"]
 SameIssuerCheck = Literal["strict", "warn", "off"]
 ReturnFilterMode = Literal["off", "ema", "sma"]
 EntrySignalMode = Literal["zscore", "ret_spread_ema", "ret_spread_sma"]
+HedgeRatioMode = Literal["training", "rolling"]
+CointegrationGateMode = Literal["off", "significant"]
 
 
 @dataclass(slots=True, frozen=True)
@@ -62,7 +64,9 @@ class StrategyConfig:
     objective: str = "sharpe_ratio"
     execution_mode: ExecutionMode = "long_cheaper_leg_only"
     entry_signal_mode: EntrySignalMode = "zscore"
+    hedge_ratio_mode: HedgeRatioMode = "training"
     return_filter_mode: ReturnFilterMode = "off"
+    cointegration_gate_mode: CointegrationGateMode = "off"
     return_filter_window: int = 10
     return_filter_min_periods: int | None = None
     a_lot_size: int = 100

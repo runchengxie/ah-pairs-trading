@@ -26,13 +26,15 @@
 
 ## 3. 构造 spread 与 z-score
 
-当前实现的核心信号是：
+默认情况下，执行层使用训练期固定参数：
 
 ```text
 spread = log(A) - intercept - hedge_ratio * log(H)
 ```
 
 之后对 `spread` 计算滚动均值和滚动标准差，生成滚动 z-score。
+
+如果打开 `--hedge-ratio-mode rolling`，执行层会改用滚动协整窗口估计的 `intercept / hedge_ratio`，并把最新窗口结果向后沿用到下一次滚动更新。
 
 信号解释如下：
 
@@ -76,6 +78,8 @@ spread = log(A) - intercept - hedge_ratio * log(H)
 - 到样本最后一天时做 end-of-sample 平仓
 
 如果主信号仍然是 `zscore`，还可以额外打开 `return_filter_mode`，要求 `ret_spread` 的 `EMA/SMA` 方向先与均值回归方向一致，再允许入场。
+
+如果打开 `--cointegration-gate-mode significant`，策略只会在最新滚动窗口协整仍显著时入场；持仓中若 gate 失效，也会触发强平。
 
 默认参数见 [`cli_reference.md`](cli_reference.md)。
 
@@ -125,10 +129,12 @@ spread = log(A) - intercept - hedge_ratio * log(H)
 - 矩阵 OLS
 - VAR 稳定性诊断
 
-这些内容当前主要用于诊断和研究，不直接驱动交易引擎。当前交易执行层的核心仍然是：
+这些内容里，ECM、半衰期、矩阵 OLS、VAR 仍主要用于诊断；滚动协整现在既可作为研究输出，也可以在执行层里驱动：
 
 - 训练期协整估计
+- 固定或滚动的 spread / hedge ratio
 - 全样本滚动 z-score
+- 可选 rolling cointegration gate
 - 训练集阈值搜索
 - `long_cheaper_leg_only` 或 `paired` 回测
 

@@ -78,7 +78,7 @@ class PipelineResult:
     rolling_beta: pd.Series
 
 
-_PIPELINE_CACHE_VERSION = 2
+_PIPELINE_CACHE_VERSION = 3
 
 
 def _cointegration_to_dict(result: CointegrationResult) -> dict[str, Any]:
@@ -139,6 +139,77 @@ def _rolling_series_summary(series: pd.Series) -> dict[str, float | int | None]:
         "min": float(clean_series.min()),
         "max": float(clean_series.max()),
     }
+
+
+def _align_rolling_float_series(index: pd.Index, series: pd.Series, *, name: str) -> pd.Series:
+    aligned = series.copy()
+    if isinstance(aligned.index, pd.DatetimeIndex):
+        aligned.index = pd.to_datetime(aligned.index).tz_localize(None)
+    return aligned.astype(float).reindex(index).ffill().rename(name)
+
+
+def _align_rolling_boolean_series(index: pd.Index, series: pd.Series, *, name: str) -> pd.Series:
+    aligned = series.copy()
+    if isinstance(aligned.index, pd.DatetimeIndex):
+        aligned.index = pd.to_datetime(aligned.index).tz_localize(None)
+    return aligned.astype("boolean").reindex(index).ffill().astype("boolean").rename(name)
+
+
+def _resolve_signal_inputs(
+    config: PipelineConfig,
+    *,
+    signal_index: pd.Index,
+    training_cointegration: CointegrationResult,
+    rolling_cointegration: pd.DataFrame,
+) -> tuple[float | pd.Series, float | pd.Series, pd.Series | None, pd.Series | None]:
+    if config.strategy.hedge_ratio_mode == "rolling":
+        if rolling_cointegration.empty:
+            intercept_input: float | pd.Series = pd.Series(float("nan"), index=signal_index, dtype=float, name="intercept")
+            hedge_ratio_input: float | pd.Series = pd.Series(
+                float("nan"),
+                index=signal_index,
+                dtype=float,
+                name="hedge_ratio",
+            )
+        else:
+            intercept_input = _align_rolling_float_series(
+                signal_index,
+                rolling_cointegration["intercept"],
+                name="intercept",
+            )
+            hedge_ratio_input = _align_rolling_float_series(
+                signal_index,
+                rolling_cointegration["hedge_ratio"],
+                name="hedge_ratio",
+            )
+    else:
+        intercept_input = training_cointegration.intercept
+        hedge_ratio_input = training_cointegration.hedge_ratio
+
+    cointegration_p_value: pd.Series | None = None
+    cointegration_significant: pd.Series | None = None
+    if config.strategy.cointegration_gate_mode == "significant":
+        if rolling_cointegration.empty:
+            cointegration_p_value = pd.Series(float("nan"), index=signal_index, dtype=float, name="cointegration_p_value")
+            cointegration_significant = pd.Series(
+                pd.NA,
+                index=signal_index,
+                dtype="boolean",
+                name="cointegration_significant",
+            )
+        else:
+            cointegration_p_value = _align_rolling_float_series(
+                signal_index,
+                rolling_cointegration["p_value"],
+                name="cointegration_p_value",
+            )
+            cointegration_significant = _align_rolling_boolean_series(
+                signal_index,
+                rolling_cointegration["significant"],
+                name="cointegration_significant",
+            )
+
+    return intercept_input, hedge_ratio_input, cointegration_p_value, cointegration_significant
 
 
 def _validate_pair_configuration(config: PipelineConfig) -> dict[str, str | None]:
@@ -282,7 +353,9 @@ def build_pipeline_summary(config: PipelineConfig, result: PipelineResult) -> di
             "z_window": config.strategy.z_window,
             "z_min_periods": config.strategy.z_min_periods,
             "entry_signal_mode": config.strategy.entry_signal_mode,
+            "hedge_ratio_mode": config.strategy.hedge_ratio_mode,
             "return_filter_mode": config.strategy.return_filter_mode,
+            "cointegration_gate_mode": config.strategy.cointegration_gate_mode,
             "return_filter_window": config.strategy.return_filter_window,
             "return_filter_min_periods": config.strategy.return_filter_min_periods,
             "max_holding_days": config.strategy.max_holding_days,
@@ -438,7 +511,9 @@ def render_pipeline_scorecard(summary: dict[str, Any]) -> str:
         f"- Best entry z-score: {_format_float(strategy_params['best_entry_z'], digits=2)}",
         f"- Entry z candidates: {', '.join(str(value) for value in strategy_params['entry_z_candidates'])}",
         f"- Entry signal: {_entry_signal_label(strategy_params)}",
+        f"- Hedge ratio mode: {strategy_params['hedge_ratio_mode']}",
         f"- Return filter: {_return_filter_label(strategy_params)}",
+        f"- Cointegration gate: {strategy_params['cointegration_gate_mode']}",
         f"- Benchmark mode: {strategy_params['benchmark_mode']}",
         f"- Benchmark: {instrument_meta['benchmark_label'] or 'not provided'}",
         f"- Benchmark source: {instrument_meta['benchmark_source'] or 'not provided'}",
@@ -508,7 +583,9 @@ def _strategy_with_entry_z(strategy_config: StrategyConfig, entry_z: float) -> S
         objective=strategy_config.objective,
         execution_mode=strategy_config.execution_mode,
         entry_signal_mode=strategy_config.entry_signal_mode,
+        hedge_ratio_mode=strategy_config.hedge_ratio_mode,
         return_filter_mode=strategy_config.return_filter_mode,
+        cointegration_gate_mode=strategy_config.cointegration_gate_mode,
         return_filter_window=strategy_config.return_filter_window,
         return_filter_min_periods=strategy_config.return_filter_min_periods,
         a_lot_size=strategy_config.a_lot_size,
@@ -740,6 +817,14 @@ def run_ah_relative_value_pipeline(
             alpha=config.alpha,
         ),
     )
+    signal_intercept, signal_hedge_ratio, signal_cointegration_p_value, signal_cointegration_significant = (
+        _resolve_signal_inputs(
+            config,
+            signal_index=prices.index,
+            training_cointegration=training_cointegration,
+            rolling_cointegration=rolling_cointegration,
+        )
+    )
     manual_ols = stage_cache.load_or_compute(
         "matrix_ols",
         {
@@ -771,8 +856,18 @@ def run_ah_relative_value_pipeline(
             "prices_digest": prices_digest,
             "a_symbol": config.a_symbol,
             "h_symbol": config.h_symbol,
-            "intercept": training_cointegration.intercept,
-            "hedge_ratio": training_cointegration.hedge_ratio,
+            "training_intercept": training_cointegration.intercept,
+            "training_hedge_ratio": training_cointegration.hedge_ratio,
+            "hedge_ratio_mode": config.strategy.hedge_ratio_mode,
+            "cointegration_gate_mode": config.strategy.cointegration_gate_mode,
+            "rolling_cointegration_digest": (
+                frame_digest(rolling_cointegration)
+                if (
+                    config.strategy.hedge_ratio_mode == "rolling"
+                    or config.strategy.cointegration_gate_mode == "significant"
+                )
+                else None
+            ),
             "z_window": config.strategy.z_window,
             "z_min_periods": config.strategy.z_min_periods,
             "return_filter_window": config.strategy.return_filter_window,
@@ -782,12 +877,14 @@ def run_ah_relative_value_pipeline(
             prices,
             a_symbol=config.a_symbol,
             h_symbol=config.h_symbol,
-            intercept=training_cointegration.intercept,
-            hedge_ratio=training_cointegration.hedge_ratio,
+            intercept=signal_intercept,
+            hedge_ratio=signal_hedge_ratio,
             z_window=config.strategy.z_window,
             min_periods=config.strategy.z_min_periods,
             return_filter_window=config.strategy.return_filter_window,
             return_filter_min_periods=config.strategy.return_filter_min_periods,
+            cointegration_p_value=signal_cointegration_p_value,
+            cointegration_significant=signal_cointegration_significant,
         ),
     )
     train_signal_frame, test_signal_frame = split_train_test(signal_frame, config.train_end_date)

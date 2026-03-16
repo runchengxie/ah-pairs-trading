@@ -122,6 +122,60 @@ def test_return_filter_can_block_entries() -> None:
     assert result.summary.time_in_market == 0.0
 
 
+def test_cointegration_gate_blocks_entries_and_forces_exit() -> None:
+    """The rolling cointegration gate should block new entries and flatten broken relationships."""
+
+    index = pd.date_range("2024-01-01", periods=5, freq="B")
+    signal_frame = pd.DataFrame(
+        {
+            "600036": [100.0, 100.0, 100.0, 100.0, 100.0],
+            "03968": [50.0, 50.0, 50.0, 50.0, 50.0],
+            "intercept": [0.1, 0.1, 0.1, 0.1, 0.1],
+            "hedge_ratio": [1.0, 1.0, 1.0, 1.0, 1.0],
+            "spread": [0.12, 0.14, 0.13, 0.12, 0.01],
+            "zscore": [1.2, 1.4, 1.1, 1.3, 0.1],
+            "cheap_leg": ["h", "h", "h", "h", "flat"],
+            "cointegration_p_value": [0.01, 0.01, 0.20, 0.20, 0.01],
+            "cointegration_significant": pd.Series([True, True, False, False, True], index=index, dtype="boolean"),
+            "cointegration_gate_pass": pd.Series([True, True, False, False, True], index=index, dtype="boolean"),
+        },
+        index=index,
+    )
+
+    result = backtest_relative_value_strategy(
+        signal_frame=signal_frame,
+        a_symbol="600036",
+        h_symbol="03968",
+        hedge_ratio=1.0,
+        strategy_config=StrategyConfig(
+            entry_z_candidates=(1.0,),
+            exit_z=0.25,
+            stop_z=2.5,
+            z_window=20,
+            z_min_periods=20,
+            max_holding_days=20,
+            position_size_fraction=0.8,
+            initial_capital=100_000.0,
+            execution_mode="paired",
+            cointegration_gate_mode="significant",
+            a_lot_size=100,
+            h_lot_size=100,
+        ),
+        cost_config=CostConfig(
+            a_buy_cost_bps=0.0,
+            a_sell_cost_bps=0.0,
+            h_buy_cost_bps=0.0,
+            h_sell_cost_bps=0.0,
+            h_stamp_duty_bps=0.0,
+            fx_conversion_bps=0.0,
+        ),
+    )
+
+    assert result.summary.trade_count == 1
+    assert result.trades.iloc[0]["exit_reason"] == "cointegration_breakdown"
+    assert result.equity_curve.loc[index[2], "position"] == "flat"
+
+
 def test_paired_backtest_and_grid_search_are_available() -> None:
     """Paired-mode execution and grid search should both be usable."""
 
@@ -204,6 +258,58 @@ def test_paired_backtest_and_grid_search_are_available() -> None:
     assert not comparison.empty
     assert not beta_series.empty
     assert sharpe_series.notna().sum() > 0
+
+
+def test_paired_backtest_uses_row_level_hedge_ratio_for_sizing() -> None:
+    """Paired sizing should follow the hedge ratio carried by the signal frame."""
+
+    signal_frame, hedge_ratio = make_ah_signal_frame()
+    high_hedge_ratio_frame = signal_frame.copy()
+    low_hedge_ratio_frame = signal_frame.copy()
+    high_hedge_ratio_frame["hedge_ratio"] = 2.0
+    low_hedge_ratio_frame["hedge_ratio"] = 0.4
+    strategy_config = StrategyConfig(
+        entry_z_candidates=(0.8,),
+        exit_z=0.25,
+        stop_z=2.5,
+        z_window=20,
+        z_min_periods=20,
+        max_holding_days=20,
+        position_size_fraction=0.8,
+        initial_capital=100_000.0,
+        execution_mode="paired",
+        a_lot_size=100,
+        h_lot_size=100,
+    )
+    zero_costs = CostConfig(
+        a_buy_cost_bps=0.0,
+        a_sell_cost_bps=0.0,
+        h_buy_cost_bps=0.0,
+        h_sell_cost_bps=0.0,
+        h_stamp_duty_bps=0.0,
+        fx_conversion_bps=0.0,
+    )
+
+    high_result = backtest_relative_value_strategy(
+        signal_frame=high_hedge_ratio_frame,
+        a_symbol="600036",
+        h_symbol="03968",
+        hedge_ratio=hedge_ratio,
+        strategy_config=strategy_config,
+        cost_config=zero_costs,
+    )
+    low_result = backtest_relative_value_strategy(
+        signal_frame=low_hedge_ratio_frame,
+        a_symbol="600036",
+        h_symbol="03968",
+        hedge_ratio=hedge_ratio,
+        strategy_config=strategy_config,
+        cost_config=zero_costs,
+    )
+
+    assert not high_result.trades.empty
+    assert not low_result.trades.empty
+    assert high_result.trades.iloc[0]["h_shares"] > low_result.trades.iloc[0]["h_shares"]
 
 
 def test_return_spread_entry_signal_mode_is_available() -> None:

@@ -486,16 +486,34 @@ def prepare_log_price_frame(price_frame: pd.DataFrame) -> pd.DataFrame:
     return np.log(price_frame)
 
 
+def _align_float_input(values: float | pd.Series, index: pd.Index, *, name: str) -> pd.Series:
+    if isinstance(values, pd.Series):
+        aligned = values.copy()
+        if isinstance(aligned.index, pd.DatetimeIndex):
+            aligned.index = pd.to_datetime(aligned.index).tz_localize(None)
+        return aligned.astype(float).reindex(index).rename(name)
+    return pd.Series(float(values), index=index, dtype=float, name=name)
+
+
+def _align_boolean_input(values: pd.Series, index: pd.Index, *, name: str) -> pd.Series:
+    aligned = values.copy()
+    if isinstance(aligned.index, pd.DatetimeIndex):
+        aligned.index = pd.to_datetime(aligned.index).tz_localize(None)
+    return aligned.astype("boolean").reindex(index).rename(name)
+
+
 def prepare_signal_frame(
     model_prices: pd.DataFrame,
     a_symbol: str,
     h_symbol: str,
-    intercept: float,
-    hedge_ratio: float,
+    intercept: float | pd.Series,
+    hedge_ratio: float | pd.Series,
     z_window: int = 120,
     min_periods: int | None = None,
     return_filter_window: int = 10,
     return_filter_min_periods: int | None = None,
+    cointegration_p_value: pd.Series | None = None,
+    cointegration_significant: pd.Series | None = None,
 ) -> pd.DataFrame:
     """Build rolling spread and z-score signals from A/H model prices."""
 
@@ -506,13 +524,16 @@ def prepare_signal_frame(
 
     minimum_periods = min_periods or z_window
     return_minimum_periods = return_filter_min_periods or return_filter_window
-    log_prices = prepare_log_price_frame(model_prices[[a_symbol, h_symbol]])
+    signal_frame = model_prices[[a_symbol, h_symbol]].copy()
+    intercept_series = _align_float_input(intercept, signal_frame.index, name="intercept")
+    hedge_ratio_series = _align_float_input(hedge_ratio, signal_frame.index, name="hedge_ratio")
+    log_prices = prepare_log_price_frame(signal_frame[[a_symbol, h_symbol]])
     log_returns = log_prices.diff()
-    spread = log_prices[a_symbol] - intercept - hedge_ratio * log_prices[h_symbol]
+    spread = log_prices[a_symbol] - intercept_series - hedge_ratio_series * log_prices[h_symbol]
     rolling_mean = spread.rolling(z_window, min_periods=minimum_periods).mean()
     rolling_std = spread.rolling(z_window, min_periods=minimum_periods).std()
     zscore = ((spread - rolling_mean) / rolling_std).replace([np.inf, -np.inf], np.nan)
-    ret_spread = log_returns[a_symbol] - hedge_ratio * log_returns[h_symbol]
+    ret_spread = spread.diff()
     ret_spread_ema = ret_spread.ewm(
         span=return_filter_window,
         adjust=False,
@@ -532,7 +553,8 @@ def prepare_signal_frame(
         np.nan,
     )
 
-    signal_frame = model_prices[[a_symbol, h_symbol]].copy()
+    signal_frame["intercept"] = intercept_series
+    signal_frame["hedge_ratio"] = hedge_ratio_series
     signal_frame["spread"] = spread
     signal_frame["rolling_mean"] = rolling_mean
     signal_frame["rolling_std"] = rolling_std
@@ -584,6 +606,20 @@ def prepare_signal_frame(
         "short_a_long_h",
         np.where(ret_spread_sma_zscore < 0, "long_a_short_h", "flat"),
     )
+    if cointegration_p_value is not None:
+        signal_frame["cointegration_p_value"] = _align_float_input(
+            cointegration_p_value,
+            signal_frame.index,
+            name="cointegration_p_value",
+        )
+    if cointegration_significant is not None:
+        significant_series = _align_boolean_input(
+            cointegration_significant,
+            signal_frame.index,
+            name="cointegration_significant",
+        )
+        signal_frame["cointegration_significant"] = significant_series
+        signal_frame["cointegration_gate_pass"] = significant_series
     return signal_frame
 
 

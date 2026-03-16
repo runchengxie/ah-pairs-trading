@@ -67,7 +67,7 @@ def test_rolling_cointegration_and_var_outputs_are_non_empty() -> None:
         step_size=20,
     )
     assert not rolling_frame.empty
-    assert {"p_value", "hedge_ratio", "residual_std"} <= set(rolling_frame.columns)
+    assert {"p_value", "significant", "intercept", "hedge_ratio", "residual_std"} <= set(rolling_frame.columns)
 
     diagnostics = fit_var_diagnostics(log_prices, symbols=("KO", "PEP"), max_lags=3)
     assert diagnostics.lag_order >= 1

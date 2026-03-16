@@ -87,6 +87,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("zscore", "ret_spread_ema", "ret_spread_sma"),
         help="Primary signal used for entry threshold search and trade management.",
     )
+    parser.add_argument(
+        "--hedge-ratio-mode",
+        default="training",
+        choices=("training", "rolling"),
+        help="Use the training-sample hedge ratio or time-varying rolling estimates for spread construction and paired sizing.",
+    )
     parser.add_argument("--z-window", type=int, default=120, help="Rolling window used to standardize the spread.")
     parser.add_argument(
         "--z-min-periods",
@@ -99,6 +105,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="off",
         choices=("off", "ema", "sma"),
         help="Optional moving-average confirmation filter applied on the return spread.",
+    )
+    parser.add_argument(
+        "--cointegration-gate-mode",
+        default="off",
+        choices=("off", "significant"),
+        help="Optional rolling cointegration gate. `significant` only allows trades when the latest rolling p-value stays below alpha.",
     )
     parser.add_argument(
         "--return-filter-window",
@@ -247,7 +259,9 @@ def main(argv: list[str] | None = None) -> int:
             objective=args.objective,
             execution_mode=args.execution_mode,
             entry_signal_mode=args.entry_signal_mode,
+            hedge_ratio_mode=args.hedge_ratio_mode,
             return_filter_mode=args.return_filter_mode,
+            cointegration_gate_mode=args.cointegration_gate_mode,
             return_filter_window=args.return_filter_window,
             return_filter_min_periods=args.return_filter_min_periods,
             a_lot_size=args.a_lot_size,

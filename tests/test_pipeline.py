@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 from ah_pairs_trading.analysis import CointegrationResult
-from ah_pairs_trading.config import CostConfig, DataConfig, PipelineConfig, StrategyConfig
+from ah_pairs_trading.config import CostConfig, DataConfig, PipelineConfig, RollingConfig, StrategyConfig
 from ah_pairs_trading.pipeline import build_pipeline_summary, render_pipeline_scorecard, run_ah_relative_value_pipeline
 
 
@@ -450,3 +450,64 @@ def test_pipeline_supports_return_spread_entry_signal_mode() -> None:
     assert "ret_spread_ema_zscore" in result.signal_frame.columns
     assert "signal_score" in result.test_backtest.equity_curve.columns
     assert summary_payload["strategy_params"]["entry_signal_mode"] == "ret_spread_ema"
+
+
+def test_pipeline_supports_dynamic_hedge_ratio_and_cointegration_gate() -> None:
+    """The pipeline should expose rolling coefficients and gating diagnostics to execution."""
+
+    a_frame, h_frame, fx_frame = make_raw_ah_frames(length=320)
+    config = PipelineConfig(
+        a_symbol="601857",
+        h_symbol="00857",
+        start_date="2020-01-01",
+        end_date="2021-03-31",
+        train_end_date="2020-11-30",
+        require_significant_cointegration=False,
+        data=DataConfig(constant_fx_rate=None),
+        strategy=StrategyConfig(
+            entry_z_candidates=(0.8, 1.0),
+            exit_z=0.2,
+            stop_z=2.0,
+            z_window=20,
+            z_min_periods=20,
+            max_holding_days=15,
+            position_size_fraction=0.75,
+            initial_capital=100_000.0,
+            execution_mode="paired",
+            hedge_ratio_mode="rolling",
+            cointegration_gate_mode="significant",
+            a_lot_size=100,
+            h_lot_size=100,
+        ),
+        costs=CostConfig(
+            a_buy_cost_bps=0.0,
+            a_sell_cost_bps=0.0,
+            h_buy_cost_bps=0.0,
+            h_sell_cost_bps=0.0,
+            h_stamp_duty_bps=0.0,
+            fx_conversion_bps=0.0,
+        ),
+        rolling=RollingConfig(
+            cointegration_window=60,
+            cointegration_step=5,
+            sharpe_window=30,
+            beta_window=30,
+            var_max_lags=3,
+        ),
+    )
+
+    result = run_ah_relative_value_pipeline(
+        config,
+        a_frame=a_frame,
+        h_frame=h_frame,
+        fx_frame=fx_frame,
+    )
+    summary_payload = build_pipeline_summary(config, result)
+
+    assert "cointegration_gate_pass" in result.signal_frame.columns
+    assert "cointegration_p_value" in result.signal_frame.columns
+    assert result.signal_frame["hedge_ratio"].notna().sum() > 0
+    assert result.signal_frame["hedge_ratio"].dropna().nunique() > 1
+    assert result.signal_frame["cointegration_gate_pass"].dropna().isin([True, False]).all()
+    assert summary_payload["strategy_params"]["hedge_ratio_mode"] == "rolling"
+    assert summary_payload["strategy_params"]["cointegration_gate_mode"] == "significant"

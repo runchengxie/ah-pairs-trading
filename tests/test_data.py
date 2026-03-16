@@ -77,6 +77,8 @@ def test_prepare_signal_frame_creates_zscores_and_direction_labels() -> None:
         min_periods=15,
     )
 
+    assert signal_frame["intercept"].notna().all()
+    assert signal_frame["hedge_ratio"].notna().all()
     assert signal_frame["zscore"].notna().sum() > 0
     assert signal_frame["ret_spread"].notna().sum() > 0
     assert signal_frame["ret_spread_ema_zscore"].notna().sum() > 0
@@ -91,6 +93,51 @@ def test_prepare_signal_frame_creates_zscores_and_direction_labels() -> None:
     assert set(signal_frame["ret_spread_sma_cheap_leg"].dropna().unique()) <= {"a", "h", "flat"}
     assert signal_frame["ret_spread_ema_filter_pass"].dropna().isin([True, False]).all()
     assert signal_frame["ret_spread_sma_filter_pass"].dropna().isin([True, False]).all()
+
+
+def test_prepare_signal_frame_supports_time_varying_parameters_and_cointegration_gate() -> None:
+    """Signal preparation should align rolling coefficients and carry gate diagnostics."""
+
+    index = pd.date_range("2024-01-01", periods=40, freq="B")
+    log_h = np.log(35.0) + 0.0015 * np.arange(len(index))
+    hedge_ratio = pd.Series(np.linspace(0.95, 1.15, len(index)), index=index, name="hedge_ratio")
+    intercept = pd.Series(np.linspace(0.08, 0.12, len(index)), index=index, name="intercept")
+    residual = 0.03 * np.sin(np.linspace(0.0, 6.0 * np.pi, len(index)))
+    log_a = intercept + hedge_ratio * log_h + residual
+    model_prices = pd.DataFrame({"600000": np.exp(log_a), "00386": np.exp(log_h)}, index=index)
+    cointegration_p_value = pd.Series(
+        np.where(np.arange(len(index)) % 2 == 0, 0.01, 0.12),
+        index=index,
+        name="cointegration_p_value",
+    )
+    cointegration_significant = pd.Series(
+        cointegration_p_value < 0.05,
+        index=index,
+        dtype="boolean",
+        name="cointegration_significant",
+    )
+
+    signal_frame = prepare_signal_frame(
+        model_prices,
+        a_symbol="600000",
+        h_symbol="00386",
+        intercept=intercept,
+        hedge_ratio=hedge_ratio,
+        z_window=12,
+        min_periods=12,
+        cointegration_p_value=cointegration_p_value,
+        cointegration_significant=cointegration_significant,
+    )
+
+    pd.testing.assert_series_equal(signal_frame["intercept"], intercept)
+    pd.testing.assert_series_equal(signal_frame["hedge_ratio"], hedge_ratio)
+    pd.testing.assert_series_equal(signal_frame["cointegration_p_value"], cointegration_p_value)
+    pd.testing.assert_series_equal(signal_frame["cointegration_significant"], cointegration_significant)
+    pd.testing.assert_series_equal(
+        signal_frame["cointegration_gate_pass"],
+        cointegration_significant.rename("cointegration_gate_pass"),
+    )
+    pd.testing.assert_series_equal(signal_frame["ret_spread"], signal_frame["spread"].diff().rename("ret_spread"))
 
 
 def test_load_ah_pair_data_reuses_cached_remote_history(tmp_path, monkeypatch) -> None:

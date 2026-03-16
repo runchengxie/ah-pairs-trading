@@ -41,8 +41,12 @@ def test_cli_passes_same_issuer_and_benchmark_flags(monkeypatch) -> None:
             "0.92",
             "--entry-signal-mode",
             "zscore",
+            "--hedge-ratio-mode",
+            "rolling",
             "--return-filter-mode",
             "ema",
+            "--cointegration-gate-mode",
+            "significant",
             "--return-filter-window",
             "7",
             "--return-filter-min-periods",
@@ -62,6 +66,8 @@ def test_cli_passes_same_issuer_and_benchmark_flags(monkeypatch) -> None:
     assert config.internal_benchmark_weighting == "equal_weight"
     assert config.same_issuer_check == "warn"
     assert config.strategy.entry_signal_mode == "zscore"
+    assert config.strategy.hedge_ratio_mode == "rolling"
     assert config.strategy.return_filter_mode == "ema"
+    assert config.strategy.cointegration_gate_mode == "significant"
     assert config.strategy.return_filter_window == 7
     assert config.strategy.return_filter_min_periods == 5
