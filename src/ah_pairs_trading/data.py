@@ -320,29 +320,95 @@ def prepare_signal_frame(
     hedge_ratio: float,
     z_window: int = 120,
     min_periods: int | None = None,
+    return_filter_window: int = 10,
+    return_filter_min_periods: int | None = None,
 ) -> pd.DataFrame:
     """Build rolling spread and z-score signals from A/H model prices."""
 
     if z_window < 2:
         raise ValueError("The rolling z-score window must be at least 2 observations.")
+    if return_filter_window < 1:
+        raise ValueError("The return-filter window must be at least 1 observation.")
 
     minimum_periods = min_periods or z_window
+    return_minimum_periods = return_filter_min_periods or return_filter_window
     log_prices = prepare_log_price_frame(model_prices[[a_symbol, h_symbol]])
+    log_returns = log_prices.diff()
     spread = log_prices[a_symbol] - intercept - hedge_ratio * log_prices[h_symbol]
     rolling_mean = spread.rolling(z_window, min_periods=minimum_periods).mean()
     rolling_std = spread.rolling(z_window, min_periods=minimum_periods).std()
     zscore = ((spread - rolling_mean) / rolling_std).replace([np.inf, -np.inf], np.nan)
+    ret_spread = log_returns[a_symbol] - hedge_ratio * log_returns[h_symbol]
+    ret_spread_ema = ret_spread.ewm(
+        span=return_filter_window,
+        adjust=False,
+        min_periods=return_minimum_periods,
+    ).mean()
+    ret_spread_sma = ret_spread.rolling(return_filter_window, min_periods=return_minimum_periods).mean()
+    ret_spread_ema_rolling_mean = ret_spread_ema.rolling(z_window, min_periods=minimum_periods).mean()
+    ret_spread_ema_rolling_std = ret_spread_ema.rolling(z_window, min_periods=minimum_periods).std()
+    ret_spread_ema_zscore = ((ret_spread_ema - ret_spread_ema_rolling_mean) / ret_spread_ema_rolling_std).replace(
+        [np.inf, -np.inf],
+        np.nan,
+    )
+    ret_spread_sma_rolling_mean = ret_spread_sma.rolling(z_window, min_periods=minimum_periods).mean()
+    ret_spread_sma_rolling_std = ret_spread_sma.rolling(z_window, min_periods=minimum_periods).std()
+    ret_spread_sma_zscore = ((ret_spread_sma - ret_spread_sma_rolling_mean) / ret_spread_sma_rolling_std).replace(
+        [np.inf, -np.inf],
+        np.nan,
+    )
 
     signal_frame = model_prices[[a_symbol, h_symbol]].copy()
     signal_frame["spread"] = spread
     signal_frame["rolling_mean"] = rolling_mean
     signal_frame["rolling_std"] = rolling_std
     signal_frame["zscore"] = zscore
+    signal_frame["a_log_return"] = log_returns[a_symbol]
+    signal_frame["h_log_return"] = log_returns[h_symbol]
+    signal_frame["ret_spread"] = ret_spread
+    signal_frame["ret_spread_ema"] = ret_spread_ema
+    signal_frame["ret_spread_ema_rolling_mean"] = ret_spread_ema_rolling_mean
+    signal_frame["ret_spread_ema_rolling_std"] = ret_spread_ema_rolling_std
+    signal_frame["ret_spread_ema_zscore"] = ret_spread_ema_zscore
+    signal_frame["ret_spread_sma"] = ret_spread_sma
+    signal_frame["ret_spread_sma_rolling_mean"] = ret_spread_sma_rolling_mean
+    signal_frame["ret_spread_sma_rolling_std"] = ret_spread_sma_rolling_std
+    signal_frame["ret_spread_sma_zscore"] = ret_spread_sma_zscore
+    ema_filter_pass = pd.Series(pd.NA, index=signal_frame.index, dtype="boolean")
+    sma_filter_pass = pd.Series(pd.NA, index=signal_frame.index, dtype="boolean")
+    zscore_positive = zscore > 0
+    zscore_negative = zscore < 0
+    ema_filter_pass.loc[zscore_positive] = ret_spread_ema.loc[zscore_positive] <= 0.0
+    ema_filter_pass.loc[zscore_negative] = ret_spread_ema.loc[zscore_negative] >= 0.0
+    sma_filter_pass.loc[zscore_positive] = ret_spread_sma.loc[zscore_positive] <= 0.0
+    sma_filter_pass.loc[zscore_negative] = ret_spread_sma.loc[zscore_negative] >= 0.0
+    signal_frame["ret_spread_ema_filter_pass"] = ema_filter_pass
+    signal_frame["ret_spread_sma_filter_pass"] = sma_filter_pass
     signal_frame["cheap_leg"] = np.where(zscore > 0, "h", np.where(zscore < 0, "a", "flat"))
     signal_frame["pair_direction"] = np.where(
         zscore > 0,
         "short_a_long_h",
         np.where(zscore < 0, "long_a_short_h", "flat"),
+    )
+    signal_frame["ret_spread_ema_cheap_leg"] = np.where(
+        ret_spread_ema_zscore > 0,
+        "h",
+        np.where(ret_spread_ema_zscore < 0, "a", "flat"),
+    )
+    signal_frame["ret_spread_ema_pair_direction"] = np.where(
+        ret_spread_ema_zscore > 0,
+        "short_a_long_h",
+        np.where(ret_spread_ema_zscore < 0, "long_a_short_h", "flat"),
+    )
+    signal_frame["ret_spread_sma_cheap_leg"] = np.where(
+        ret_spread_sma_zscore > 0,
+        "h",
+        np.where(ret_spread_sma_zscore < 0, "a", "flat"),
+    )
+    signal_frame["ret_spread_sma_pair_direction"] = np.where(
+        ret_spread_sma_zscore > 0,
+        "short_a_long_h",
+        np.where(ret_spread_sma_zscore < 0, "long_a_short_h", "flat"),
     )
     return signal_frame
 

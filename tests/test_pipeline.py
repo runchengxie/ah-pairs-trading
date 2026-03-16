@@ -221,8 +221,10 @@ def test_pipeline_summary_schema_and_scorecard_are_persisted(tmp_path) -> None:
     assert summary_payload["benchmark_metrics"]["benchmark_total_return"] is not None
     assert "Test Scorecard" in summary_markdown
     assert "Benchmark Comparison" in summary_markdown
+    assert "Rolling Beta (" in summary_markdown
     assert "Annual volatility" in terminal_scorecard
     assert "Pair validation: matched" in terminal_scorecard
+    assert "Rolling Beta (" in terminal_scorecard
     assert "Artifacts:" in terminal_scorecard
 
 
@@ -389,6 +391,62 @@ def test_paired_mode_without_explicit_benchmark_does_not_auto_generate_internal_
         h_frame=h_frame,
         fx_frame=fx_frame,
     )
+    summary_payload = build_pipeline_summary(config, result)
+    scorecard = render_pipeline_scorecard(summary_payload)
 
     assert result.benchmark_comparison.empty
     assert result.rolling_beta.empty
+    assert summary_payload["benchmark_metrics"] is None
+    assert "Rolling Beta (60d): unavailable because no benchmark was resolved" in scorecard
+    assert "mean=n/a" not in scorecard
+
+
+def test_pipeline_supports_return_spread_entry_signal_mode() -> None:
+    """The pipeline should support a standardized return-spread signal as the primary entry mode."""
+
+    a_frame, h_frame, fx_frame = make_raw_ah_frames()
+    config = PipelineConfig(
+        a_symbol="601857",
+        h_symbol="00857",
+        start_date="2020-01-01",
+        end_date="2020-12-31",
+        train_end_date="2020-09-30",
+        require_significant_cointegration=False,
+        benchmark_mode="internal",
+        data=DataConfig(constant_fx_rate=None),
+        strategy=StrategyConfig(
+            entry_z_candidates=(0.5, 0.8),
+            exit_z=0.2,
+            stop_z=2.0,
+            z_window=20,
+            z_min_periods=20,
+            max_holding_days=15,
+            position_size_fraction=0.75,
+            initial_capital=100_000.0,
+            execution_mode="paired",
+            entry_signal_mode="ret_spread_ema",
+            a_lot_size=100,
+            h_lot_size=100,
+        ),
+        costs=CostConfig(
+            a_buy_cost_bps=0.0,
+            a_sell_cost_bps=0.0,
+            h_buy_cost_bps=0.0,
+            h_sell_cost_bps=0.0,
+            h_stamp_duty_bps=0.0,
+            fx_conversion_bps=0.0,
+        ),
+    )
+
+    result = run_ah_relative_value_pipeline(
+        config,
+        a_frame=a_frame,
+        h_frame=h_frame,
+        fx_frame=fx_frame,
+    )
+    summary_payload = build_pipeline_summary(config, result)
+
+    assert result.best_entry_z in {0.5, 0.8}
+    assert "ret_spread_ema_zscore" in result.signal_frame.columns
+    assert "signal_score" in result.test_backtest.equity_curve.columns
+    assert summary_payload["strategy_params"]["entry_signal_mode"] == "ret_spread_ema"

@@ -87,6 +87,8 @@
 - `beta`
 - `alpha`
 
+如果没有解析到 benchmark，终端 scorecard 里的 `Rolling Beta` 会明确显示 unavailable，而不是输出一串 `n/a`。
+
 ## 输出文件
 
 指定 `--output-dir` 后，常见产物包括：

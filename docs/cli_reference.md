@@ -20,7 +20,7 @@
 - `--h-csv`
   本地 H 股历史 CSV；传入后只用这个文件
 - `--fx-csv`
-  本地 HKD/CNY 历史 CSV；正式回测更推荐这个
+  本地 HKD/CNY 历史 CSV；正式回测更推荐这个。没有现成文件时，可以先运行 `python scripts/fetch_fx_history.py ...`
 - `--benchmark-csv`
   本地 benchmark 历史 CSV
 - `--constant-fx-rate`
@@ -36,6 +36,14 @@
   z-score 滚动窗口，默认 `120`
 - `--z-min-periods`
   计算滚动 z-score 所需的最小样本数，默认 `60`
+- `--entry-signal-mode`
+  主信号模式，支持 `zscore`、`ret_spread_ema`、`ret_spread_sma`
+- `--return-filter-mode`
+  只在 `entry_signal_mode=zscore` 下生效；支持 `off`、`ema`、`sma`
+- `--return-filter-window`
+  return-spread 平滑窗口，默认 `10`
+- `--return-filter-min-periods`
+  return-spread 过滤器所需的最小样本数；默认跟随 `return-filter-window`
 - `--z-grid`
   训练集上搜索的入场阈值，默认 `1.5,2.0,2.5`
 - `--exit-z`
@@ -113,10 +121,21 @@ pairs-trading \
 
 ### Research run
 
+先生成 FX CSV：
+
+```bash
+python scripts/fetch_fx_history.py \
+  --start-date 2018-01-01 \
+  --end-date 2024-12-31 \
+  --output-csv data/fx/hkdcny_2018_2024.csv
+```
+
+再跑研究命令：
+
 ```bash
 pairs-trading \
   --a-symbol 601857 \
   --h-symbol 00857 \
-  --fx-csv /path/to/hkdcny.csv \
+  --fx-csv data/fx/hkdcny_2018_2024.csv \
   --output-dir outputs/petrochina_ah_research
 ```

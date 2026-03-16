@@ -81,12 +81,36 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("long_cheaper_leg_only", "paired"),
         help="Execution mode for the strategy.",
     )
+    parser.add_argument(
+        "--entry-signal-mode",
+        default="zscore",
+        choices=("zscore", "ret_spread_ema", "ret_spread_sma"),
+        help="Primary signal used for entry threshold search and trade management.",
+    )
     parser.add_argument("--z-window", type=int, default=120, help="Rolling window used to standardize the spread.")
     parser.add_argument(
         "--z-min-periods",
         type=int,
         default=60,
         help="Minimum observations required before a rolling z-score is considered valid.",
+    )
+    parser.add_argument(
+        "--return-filter-mode",
+        default="off",
+        choices=("off", "ema", "sma"),
+        help="Optional moving-average confirmation filter applied on the return spread.",
+    )
+    parser.add_argument(
+        "--return-filter-window",
+        type=int,
+        default=10,
+        help="Window used to build the return-spread EMA/SMA signals.",
+    )
+    parser.add_argument(
+        "--return-filter-min-periods",
+        type=int,
+        default=None,
+        help="Minimum observations required before the return-spread filter is considered valid.",
     )
     parser.add_argument(
         "--z-grid",
@@ -222,6 +246,10 @@ def main(argv: list[str] | None = None) -> int:
             initial_capital=args.initial_capital,
             objective=args.objective,
             execution_mode=args.execution_mode,
+            entry_signal_mode=args.entry_signal_mode,
+            return_filter_mode=args.return_filter_mode,
+            return_filter_window=args.return_filter_window,
+            return_filter_min_periods=args.return_filter_min_periods,
             a_lot_size=args.a_lot_size,
             h_lot_size=args.h_lot_size,
         ),

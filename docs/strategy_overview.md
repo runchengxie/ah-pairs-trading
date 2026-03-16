@@ -44,8 +44,19 @@ spread = log(A) - intercept - hedge_ratio * log(H)
 
 - `cheap_leg`
 - `pair_direction`
+- `ret_spread`
+- `ret_spread_ema`
+- `ret_spread_sma`
 
 其中 `pair_direction` 仍然会给出传统多空方向，但是否真的做空，取决于执行模式。
+
+现在的执行层支持三种主信号模式：
+
+- `zscore`
+- `ret_spread_ema`
+- `ret_spread_sma`
+
+其中后两者会先对收益率价差的均线做滚动标准化，再沿用同一套入场阈值、止盈止损和持有期规则。
 
 ## 4. 入场、出场与参数选择
 
@@ -63,6 +74,8 @@ spread = log(A) - intercept - hedge_ratio * log(H)
 - `|z|` 扩大到 `stop_z` 时止损
 - 超过 `max_holding_days` 时强平
 - 到样本最后一天时做 end-of-sample 平仓
+
+如果主信号仍然是 `zscore`，还可以额外打开 `return_filter_mode`，要求 `ret_spread` 的 `EMA/SMA` 方向先与均值回归方向一致，再允许入场。
 
 默认参数见 [`cli_reference.md`](cli_reference.md)。
 

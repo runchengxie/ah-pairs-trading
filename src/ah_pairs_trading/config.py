@@ -12,6 +12,8 @@ BenchmarkMarket = Literal["a", "h"]
 BenchmarkMode = Literal["auto", "external", "internal", "off"]
 InternalBenchmarkWeighting = Literal["hedge_ratio", "equal_weight"]
 SameIssuerCheck = Literal["strict", "warn", "off"]
+ReturnFilterMode = Literal["off", "ema", "sma"]
+EntrySignalMode = Literal["zscore", "ret_spread_ema", "ret_spread_sma"]
 
 
 @dataclass(slots=True, frozen=True)
@@ -59,6 +61,10 @@ class StrategyConfig:
     initial_capital: float = 100_000.0
     objective: str = "sharpe_ratio"
     execution_mode: ExecutionMode = "long_cheaper_leg_only"
+    entry_signal_mode: EntrySignalMode = "zscore"
+    return_filter_mode: ReturnFilterMode = "off"
+    return_filter_window: int = 10
+    return_filter_min_periods: int | None = None
     a_lot_size: int = 100
     h_lot_size: int = 100
 

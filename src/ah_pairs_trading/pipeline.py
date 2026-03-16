@@ -78,7 +78,7 @@ class PipelineResult:
     rolling_beta: pd.Series
 
 
-_PIPELINE_CACHE_VERSION = 1
+_PIPELINE_CACHE_VERSION = 2
 
 
 def _cointegration_to_dict(result: CointegrationResult) -> dict[str, Any]:
@@ -281,6 +281,10 @@ def build_pipeline_summary(config: PipelineConfig, result: PipelineResult) -> di
             "stop_z": config.strategy.stop_z,
             "z_window": config.strategy.z_window,
             "z_min_periods": config.strategy.z_min_periods,
+            "entry_signal_mode": config.strategy.entry_signal_mode,
+            "return_filter_mode": config.strategy.return_filter_mode,
+            "return_filter_window": config.strategy.return_filter_window,
+            "return_filter_min_periods": config.strategy.return_filter_min_periods,
             "max_holding_days": config.strategy.max_holding_days,
             "position_size_fraction": config.strategy.position_size_fraction,
             "initial_capital": config.strategy.initial_capital,
@@ -342,6 +346,21 @@ def _format_days(value: int | None) -> str:
     return f"{value} days"
 
 
+def _return_filter_label(strategy_params: dict[str, Any]) -> str:
+    mode = strategy_params.get("return_filter_mode", "off")
+    if mode == "off":
+        return "off"
+    window = strategy_params.get("return_filter_window")
+    return f"{str(mode).upper()}({window})"
+
+
+def _entry_signal_label(strategy_params: dict[str, Any]) -> str:
+    mode = str(strategy_params.get("entry_signal_mode", "zscore"))
+    if mode == "zscore":
+        return "zscore"
+    return f"{mode} (z-scored)"
+
+
 def _render_backtest_section(title: str, metrics: dict[str, Any]) -> list[str]:
     return [
         title,
@@ -373,6 +392,24 @@ def _render_backtest_section(title: str, metrics: dict[str, Any]) -> list[str]:
     ]
 
 
+def _render_rolling_beta_line(summary: dict[str, Any]) -> str:
+    rolling_metrics = summary["rolling_metrics"]
+    benchmark_metrics = summary.get("benchmark_metrics")
+    beta_window = rolling_metrics["beta_window"]
+    beta_stats = rolling_metrics["test_rolling_beta"]
+    if int(beta_stats.get("observations", 0)) > 0:
+        return (
+            f"- Rolling Beta ({beta_window}d): "
+            f"mean={_format_float(beta_stats['mean'], digits=3)}, "
+            f"median={_format_float(beta_stats['median'], digits=3)}, "
+            f"min={_format_float(beta_stats['min'], digits=3)}, "
+            f"max={_format_float(beta_stats['max'], digits=3)}"
+        )
+    if benchmark_metrics is None:
+        return f"- Rolling Beta ({beta_window}d): unavailable because no benchmark was resolved"
+    return f"- Rolling Beta ({beta_window}d): unavailable because there are fewer than {beta_window} aligned observations"
+
+
 def render_pipeline_scorecard(summary: dict[str, Any]) -> str:
     """Render a human-readable scorecard from a structured pipeline summary."""
 
@@ -400,6 +437,8 @@ def render_pipeline_scorecard(summary: dict[str, Any]) -> str:
         f"- Execution mode: {strategy_params['execution_mode']}",
         f"- Best entry z-score: {_format_float(strategy_params['best_entry_z'], digits=2)}",
         f"- Entry z candidates: {', '.join(str(value) for value in strategy_params['entry_z_candidates'])}",
+        f"- Entry signal: {_entry_signal_label(strategy_params)}",
+        f"- Return filter: {_return_filter_label(strategy_params)}",
         f"- Benchmark mode: {strategy_params['benchmark_mode']}",
         f"- Benchmark: {instrument_meta['benchmark_label'] or 'not provided'}",
         f"- Benchmark source: {instrument_meta['benchmark_source'] or 'not provided'}",
@@ -445,13 +484,7 @@ def render_pipeline_scorecard(summary: dict[str, Any]) -> str:
                 f"min={_format_float(rolling_metrics['test_rolling_sharpe']['min'], digits=3)}, "
                 f"max={_format_float(rolling_metrics['test_rolling_sharpe']['max'], digits=3)}"
             ),
-            (
-                f"- Rolling Beta ({rolling_metrics['beta_window']}d): "
-                f"mean={_format_float(rolling_metrics['test_rolling_beta']['mean'], digits=3)}, "
-                f"median={_format_float(rolling_metrics['test_rolling_beta']['median'], digits=3)}, "
-                f"min={_format_float(rolling_metrics['test_rolling_beta']['min'], digits=3)}, "
-                f"max={_format_float(rolling_metrics['test_rolling_beta']['max'], digits=3)}"
-            ),
+            _render_rolling_beta_line(summary),
             (
                 f"- Artifacts: {run_meta['output_dir']}"
                 if run_meta["output_dir"] is not None
@@ -474,6 +507,10 @@ def _strategy_with_entry_z(strategy_config: StrategyConfig, entry_z: float) -> S
         initial_capital=strategy_config.initial_capital,
         objective=strategy_config.objective,
         execution_mode=strategy_config.execution_mode,
+        entry_signal_mode=strategy_config.entry_signal_mode,
+        return_filter_mode=strategy_config.return_filter_mode,
+        return_filter_window=strategy_config.return_filter_window,
+        return_filter_min_periods=strategy_config.return_filter_min_periods,
         a_lot_size=strategy_config.a_lot_size,
         h_lot_size=strategy_config.h_lot_size,
     )
@@ -738,6 +775,8 @@ def run_ah_relative_value_pipeline(
             "hedge_ratio": training_cointegration.hedge_ratio,
             "z_window": config.strategy.z_window,
             "z_min_periods": config.strategy.z_min_periods,
+            "return_filter_window": config.strategy.return_filter_window,
+            "return_filter_min_periods": config.strategy.return_filter_min_periods,
         },
         lambda: prepare_signal_frame(
             prices,
@@ -747,6 +786,8 @@ def run_ah_relative_value_pipeline(
             hedge_ratio=training_cointegration.hedge_ratio,
             z_window=config.strategy.z_window,
             min_periods=config.strategy.z_min_periods,
+            return_filter_window=config.strategy.return_filter_window,
+            return_filter_min_periods=config.strategy.return_filter_min_periods,
         ),
     )
     train_signal_frame, test_signal_frame = split_train_test(signal_frame, config.train_end_date)

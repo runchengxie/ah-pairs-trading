@@ -76,12 +76,19 @@ def test_prepare_signal_frame_creates_zscores_and_direction_labels() -> None:
     )
 
     assert signal_frame["zscore"].notna().sum() > 0
+    assert signal_frame["ret_spread"].notna().sum() > 0
+    assert signal_frame["ret_spread_ema_zscore"].notna().sum() > 0
+    assert signal_frame["ret_spread_sma_zscore"].notna().sum() > 0
     assert set(signal_frame["cheap_leg"].dropna().unique()) <= {"a", "h", "flat"}
     assert set(signal_frame["pair_direction"].dropna().unique()) <= {
         "flat",
         "short_a_long_h",
         "long_a_short_h",
     }
+    assert set(signal_frame["ret_spread_ema_cheap_leg"].dropna().unique()) <= {"a", "h", "flat"}
+    assert set(signal_frame["ret_spread_sma_cheap_leg"].dropna().unique()) <= {"a", "h", "flat"}
+    assert signal_frame["ret_spread_ema_filter_pass"].dropna().isin([True, False]).all()
+    assert signal_frame["ret_spread_sma_filter_pass"].dropna().isin([True, False]).all()
 
 
 def test_load_ah_pair_data_reuses_cached_remote_history(tmp_path, monkeypatch) -> None:

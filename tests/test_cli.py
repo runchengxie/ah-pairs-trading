@@ -39,6 +39,14 @@ def test_cli_passes_same_issuer_and_benchmark_flags(monkeypatch) -> None:
         [
             "--constant-fx-rate",
             "0.92",
+            "--entry-signal-mode",
+            "zscore",
+            "--return-filter-mode",
+            "ema",
+            "--return-filter-window",
+            "7",
+            "--return-filter-min-periods",
+            "5",
             "--benchmark-mode",
             "internal",
             "--internal-benchmark-weighting",
@@ -53,3 +61,7 @@ def test_cli_passes_same_issuer_and_benchmark_flags(monkeypatch) -> None:
     assert config.benchmark_mode == "internal"
     assert config.internal_benchmark_weighting == "equal_weight"
     assert config.same_issuer_check == "warn"
+    assert config.strategy.entry_signal_mode == "zscore"
+    assert config.strategy.return_filter_mode == "ema"
+    assert config.strategy.return_filter_window == 7
+    assert config.strategy.return_filter_min_periods == 5

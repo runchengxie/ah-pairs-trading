@@ -139,11 +139,19 @@ def _gross_exposure(position: PositionState, a_price: float, h_price: float) -> 
     return float(abs(position.a_shares * a_price) + abs(position.h_shares * h_price))
 
 
+def _entry_signal_columns(strategy_config: StrategyConfig) -> tuple[str, str]:
+    if strategy_config.entry_signal_mode == "zscore":
+        return "zscore", "cheap_leg"
+    if strategy_config.entry_signal_mode == "ret_spread_ema":
+        return "ret_spread_ema_zscore", "ret_spread_ema_cheap_leg"
+    return "ret_spread_sma_zscore", "ret_spread_sma_cheap_leg"
+
+
 def _build_position(
     *,
     date: pd.Timestamp,
     row_number: int,
-    zscore: float,
+    signal_value: float,
     a_price: float,
     h_price: float,
     capital: float,
@@ -156,7 +164,7 @@ def _build_position(
         return None
 
     if strategy_config.execution_mode == "long_cheaper_leg_only":
-        if zscore > 0:
+        if signal_value > 0:
             h_notional = gross_budget
             h_shares = _round_lot_shares(h_notional, h_price, strategy_config.h_lot_size)
             if h_shares <= 0:
@@ -166,7 +174,7 @@ def _build_position(
                 entry_date=date,
                 entry_row_number=row_number,
                 direction="long_h_only",
-                entry_zscore=float(zscore),
+                entry_zscore=float(signal_value),
                 a_side=0,
                 a_shares=0,
                 a_entry_price=a_price,
@@ -185,7 +193,7 @@ def _build_position(
             entry_date=date,
             entry_row_number=row_number,
             direction="long_a_only",
-            entry_zscore=float(zscore),
+            entry_zscore=float(signal_value),
             a_side=1,
             a_shares=a_shares,
             a_entry_price=a_price,
@@ -205,7 +213,7 @@ def _build_position(
     if a_shares <= 0 or h_shares <= 0:
         return None
 
-    if zscore > 0:
+    if signal_value > 0:
         a_side = -1
         h_side = 1
         direction = "short_a_long_h"
@@ -224,7 +232,7 @@ def _build_position(
         entry_date=date,
         entry_row_number=row_number,
         direction=direction,
-        entry_zscore=float(zscore),
+        entry_zscore=float(signal_value),
         a_side=a_side,
         a_shares=a_shares,
         a_entry_price=a_price,
@@ -238,11 +246,12 @@ def _build_position(
 def _close_trade_record(
     position: PositionState,
     exit_date: pd.Timestamp,
-    exit_zscore: float,
+    exit_signal_value: float,
     gross_pnl: float,
     exit_cost: float,
     holding_days: int,
     exit_reason: str,
+    entry_signal_mode: str,
 ) -> dict[str, Any]:
     total_cost = position.entry_cost + exit_cost
     return {
@@ -253,8 +262,11 @@ def _close_trade_record(
         "a_shares": position.a_shares,
         "h_side": position.h_side,
         "h_shares": position.h_shares,
+        "entry_signal_mode": entry_signal_mode,
+        "entry_signal_value": position.entry_zscore,
+        "exit_signal_value": exit_signal_value,
         "entry_zscore": position.entry_zscore,
-        "exit_zscore": exit_zscore,
+        "exit_zscore": exit_signal_value,
         "gross_pnl": gross_pnl,
         "entry_cost": position.entry_cost,
         "exit_cost": exit_cost,
@@ -262,6 +274,33 @@ def _close_trade_record(
         "holding_days": holding_days,
         "exit_reason": exit_reason,
     }
+
+
+def _return_filter_pass_column(strategy_config: StrategyConfig) -> str | None:
+    if strategy_config.return_filter_mode == "off":
+        return None
+    if strategy_config.return_filter_mode == "ema":
+        return "ret_spread_ema_filter_pass"
+    return "ret_spread_sma_filter_pass"
+
+
+def _return_signal_column(strategy_config: StrategyConfig) -> str | None:
+    if strategy_config.return_filter_mode == "off":
+        return None
+    if strategy_config.return_filter_mode == "ema":
+        return "ret_spread_ema"
+    return "ret_spread_sma"
+
+
+def _passes_return_filter(row: pd.Series, strategy_config: StrategyConfig) -> bool:
+    filter_column = _return_filter_pass_column(strategy_config)
+    if filter_column is None:
+        return True
+
+    filter_value = row.get(filter_column, pd.NA)
+    if pd.isna(filter_value):
+        return False
+    return bool(filter_value)
 
 
 def backtest_relative_value_strategy(
@@ -281,6 +320,21 @@ def backtest_relative_value_strategy(
         raise ValueError("At least one entry z-score candidate is required.")
     if strategy_config.stop_z <= strategy_config.exit_z:
         raise ValueError("The stop-loss z-score must be larger than the exit z-score.")
+    signal_column, cheap_leg_column = _entry_signal_columns(strategy_config)
+    if signal_column not in signal_frame.columns:
+        raise ValueError(
+            f"The signal frame is missing '{signal_column}' required by entry_signal_mode="
+            f"'{strategy_config.entry_signal_mode}'."
+        )
+    if strategy_config.entry_signal_mode != "zscore" and strategy_config.return_filter_mode != "off":
+        raise ValueError("The return filter is only supported when `entry_signal_mode='zscore'`.")
+    return_filter_column = _return_filter_pass_column(strategy_config)
+    return_signal_column = _return_signal_column(strategy_config)
+    if return_filter_column is not None and return_filter_column not in signal_frame.columns:
+        raise ValueError(
+            f"The signal frame is missing '{return_filter_column}' required by return_filter_mode="
+            f"'{strategy_config.return_filter_mode}'."
+        )
 
     open_position: PositionState | None = None
     realized_pnl = 0.0
@@ -292,9 +346,20 @@ def backtest_relative_value_strategy(
     for row_number, (date, row) in enumerate(signal_frame.iterrows()):
         a_price = float(row[a_symbol])
         h_price = float(row[h_symbol])
-        zscore = float(row["zscore"]) if pd.notna(row["zscore"]) else np.nan
+        signal_value = float(row[signal_column]) if pd.notna(row[signal_column]) else np.nan
+        raw_zscore = float(row["zscore"]) if pd.notna(row["zscore"]) else np.nan
         spread = float(row["spread"]) if pd.notna(row["spread"]) else np.nan
-        cheap_leg = row.get("cheap_leg", "flat")
+        cheap_leg = row.get(cheap_leg_column, "flat")
+        return_signal = (
+            float(row[return_signal_column])
+            if return_signal_column is not None and pd.notna(row.get(return_signal_column))
+            else np.nan
+        )
+        return_filter_pass = (
+            bool(row[return_filter_column])
+            if return_filter_column is not None and pd.notna(row.get(return_filter_column))
+            else pd.NA
+        )
         unrealized_pnl = 0.0
         closed_this_bar = False
 
@@ -302,9 +367,9 @@ def backtest_relative_value_strategy(
             unrealized_pnl = _mark_to_market(open_position, a_price, h_price)
             holding_days = row_number - open_position.entry_row_number
             exit_reason: str | None = None
-            if pd.notna(zscore) and abs(zscore) <= strategy_config.exit_z:
+            if pd.notna(signal_value) and abs(signal_value) <= strategy_config.exit_z:
                 exit_reason = "mean_reversion"
-            elif pd.notna(zscore) and abs(zscore) >= strategy_config.stop_z:
+            elif pd.notna(signal_value) and abs(signal_value) >= strategy_config.stop_z:
                 exit_reason = "stop_loss"
             elif holding_days >= strategy_config.max_holding_days:
                 exit_reason = "max_holding_period"
@@ -329,11 +394,12 @@ def backtest_relative_value_strategy(
                     _close_trade_record(
                         position=open_position,
                         exit_date=date,
-                        exit_zscore=float(zscore) if pd.notna(zscore) else np.nan,
+                        exit_signal_value=float(signal_value) if pd.notna(signal_value) else np.nan,
                         gross_pnl=float(unrealized_pnl),
                         exit_cost=float(exit_cost),
                         holding_days=holding_days,
                         exit_reason=exit_reason,
+                        entry_signal_mode=strategy_config.entry_signal_mode,
                     )
                 )
                 open_position = None
@@ -345,13 +411,14 @@ def backtest_relative_value_strategy(
             open_position is None
             and not closed_this_bar
             and row_number != last_row_index
-            and pd.notna(zscore)
-            and abs(zscore) >= min(strategy_config.entry_z_candidates)
+            and pd.notna(signal_value)
+            and abs(signal_value) >= min(strategy_config.entry_z_candidates)
+            and _passes_return_filter(row, strategy_config)
         ):
             candidate = _build_position(
                 date=date,
                 row_number=row_number,
-                zscore=float(zscore),
+                signal_value=float(signal_value),
                 a_price=a_price,
                 h_price=h_price,
                 capital=available_capital,
@@ -371,8 +438,11 @@ def backtest_relative_value_strategy(
                 "date": date,
                 "capital": capital,
                 "spread": spread,
-                "zscore": zscore,
+                "zscore": raw_zscore,
+                "signal_score": signal_value,
                 "cheap_leg": cheap_leg,
+                "return_signal": return_signal,
+                "return_filter_pass": return_filter_pass,
                 "position": "flat" if open_position is None else open_position.direction,
                 "gross_exposure": 0.0 if open_position is None else _gross_exposure(open_position, a_price, h_price),
             }
@@ -391,6 +461,9 @@ def backtest_relative_value_strategy(
             "a_shares",
             "h_side",
             "h_shares",
+            "entry_signal_mode",
+            "entry_signal_value",
+            "exit_signal_value",
             "entry_zscore",
             "exit_zscore",
             "gross_pnl",
@@ -500,6 +573,10 @@ def grid_search_entry_z(
             initial_capital=strategy_config.initial_capital,
             objective=strategy_config.objective,
             execution_mode=strategy_config.execution_mode,
+            entry_signal_mode=strategy_config.entry_signal_mode,
+            return_filter_mode=strategy_config.return_filter_mode,
+            return_filter_window=strategy_config.return_filter_window,
+            return_filter_min_periods=strategy_config.return_filter_min_periods,
             a_lot_size=strategy_config.a_lot_size,
             h_lot_size=strategy_config.h_lot_size,
         )

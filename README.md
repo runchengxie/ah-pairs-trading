@@ -55,11 +55,22 @@ python main.py ...
 
 更严肃的研究口径更推荐提供真实 FX 历史，并保留协整显著性 guardrail：
 
+先生成项目可直接读取的 `HKD/CNY` 历史 CSV：
+
+```bash
+python scripts/fetch_fx_history.py \
+  --start-date 2018-01-01 \
+  --end-date 2024-12-31 \
+  --output-csv data/fx/hkdcny_2018_2024.csv
+```
+
+再把这份 CSV 喂给主回测：
+
 ```bash
 pairs-trading \
   --a-symbol 601857 \
   --h-symbol 00857 \
-  --fx-csv /path/to/hkdcny.csv \
+  --fx-csv data/fx/hkdcny_2018_2024.csv \
   --output-dir outputs/petrochina_ah_research
 ```
 
@@ -67,7 +78,8 @@ pairs-trading \
 
 - 不加 `--allow-non-coint` 时，训练集协整不显著会直接中止
 - 正式回测更推荐 `--fx-csv`，而不是 `--constant-fx-rate`
-- 本地 CSV 路径必须替换成你自己的真实文件
+- `scripts/fetch_fx_history.py` 会通过 Frankfurter 拉取 ECB-backed 参考汇率，并输出项目兼容的 `date,fx_rate,...` CSV
+- 主回测 CLI 仍然不会自动联网拉 FX；这样做是为了保持输入可复现
 
 ## 执行模式
 
@@ -106,7 +118,9 @@ pairs-trading \
 - 先对齐 A/H/FX，并把 H 股价格转换成人民币口径
 - 用训练集估计截距和 `hedge_ratio`
 - 用全样本滚动 z-score 生成信号
+- 也支持把 `ret_spread` 的 `EMA/SMA` 信号作为主模型，或作为 `z-score` 的入场过滤器
 - 在训练集上搜索最佳入场阈值，再分别回测训练集和测试集
+- 提供独立 FX 下载脚本，把 Frankfurter 的 ECB-backed 历史汇率落成本地 `fx.csv`
 - 输出 scorecard、CSV、图表和结构化摘要
 
 ## 说明

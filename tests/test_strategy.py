@@ -81,6 +81,47 @@ def test_long_cheaper_leg_backtest_generates_trades_and_positive_pnl() -> None:
     assert {"capital", "returns", "spread", "zscore", "position", "gross_exposure"} <= set(result.equity_curve.columns)
 
 
+def test_return_filter_can_block_entries() -> None:
+    """The optional return filter should be able to suppress otherwise valid z-score entries."""
+
+    signal_frame, hedge_ratio = make_ah_signal_frame()
+    blocked_signal_frame = signal_frame.copy()
+    blocked_signal_frame.loc[blocked_signal_frame["zscore"].notna(), "ret_spread_ema_filter_pass"] = False
+
+    result = backtest_relative_value_strategy(
+        signal_frame=blocked_signal_frame,
+        a_symbol="600036",
+        h_symbol="03968",
+        hedge_ratio=hedge_ratio,
+        strategy_config=StrategyConfig(
+            entry_z_candidates=(0.9,),
+            exit_z=0.25,
+            stop_z=2.5,
+            z_window=20,
+            z_min_periods=20,
+            max_holding_days=20,
+            position_size_fraction=0.8,
+            initial_capital=100_000.0,
+            execution_mode="long_cheaper_leg_only",
+            return_filter_mode="ema",
+            return_filter_window=10,
+            a_lot_size=100,
+            h_lot_size=100,
+        ),
+        cost_config=CostConfig(
+            a_buy_cost_bps=0.0,
+            a_sell_cost_bps=0.0,
+            h_buy_cost_bps=0.0,
+            h_sell_cost_bps=0.0,
+            h_stamp_duty_bps=0.0,
+            fx_conversion_bps=0.0,
+        ),
+    )
+
+    assert result.summary.trade_count == 0
+    assert result.summary.time_in_market == 0.0
+
+
 def test_paired_backtest_and_grid_search_are_available() -> None:
     """Paired-mode execution and grid search should both be usable."""
 
@@ -163,3 +204,40 @@ def test_paired_backtest_and_grid_search_are_available() -> None:
     assert not comparison.empty
     assert not beta_series.empty
     assert sharpe_series.notna().sum() > 0
+
+
+def test_return_spread_entry_signal_mode_is_available() -> None:
+    """A standardized return-spread signal should be usable as the primary entry mode."""
+
+    signal_frame, hedge_ratio = make_ah_signal_frame()
+    result = backtest_relative_value_strategy(
+        signal_frame=signal_frame,
+        a_symbol="600036",
+        h_symbol="03968",
+        hedge_ratio=hedge_ratio,
+        strategy_config=StrategyConfig(
+            entry_z_candidates=(0.5,),
+            exit_z=0.2,
+            stop_z=2.0,
+            z_window=20,
+            z_min_periods=20,
+            max_holding_days=20,
+            position_size_fraction=0.8,
+            initial_capital=100_000.0,
+            execution_mode="paired",
+            entry_signal_mode="ret_spread_ema",
+            a_lot_size=100,
+            h_lot_size=100,
+        ),
+        cost_config=CostConfig(
+            a_buy_cost_bps=0.0,
+            a_sell_cost_bps=0.0,
+            h_buy_cost_bps=0.0,
+            h_sell_cost_bps=0.0,
+            h_stamp_duty_bps=0.0,
+            fx_conversion_bps=0.0,
+        ),
+    )
+
+    assert result.summary.trade_count > 0
+    assert "signal_score" in result.equity_curve.columns

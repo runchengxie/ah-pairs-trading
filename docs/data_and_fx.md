@@ -13,10 +13,21 @@
 - 如果没有显式传 A/H CSV，程序会先查本地缓存
 - 本地没有缓存时，才会通过 AkShare 在线拉取 A/H 历史
 
-FX 不会自动联网拉取，必须自己提供：
+主回测 CLI 不会自动联网拉取 FX，必须自己提供：
 
 - `--fx-csv`
 - 或 `--constant-fx-rate`
+
+如果你缺少 `fx.csv`，仓库现在提供了一个独立脚本，可以先下载再回测：
+
+```bash
+python scripts/fetch_fx_history.py \
+  --start-date 2018-01-01 \
+  --end-date 2024-12-31 \
+  --output-csv data/fx/hkdcny_2018_2024.csv
+```
+
+这个脚本会通过 Frankfurter 拉取 ECB-backed 的 `EUR->CNY` 和 `EUR->HKD` 参考汇率，再交叉换算成项目需要的 `HKD/CNY` 历史。
 
 ## A/H 与 FX 的价格口径
 
@@ -43,6 +54,11 @@ h_close_cny = h_close_hkd * fx_rate * share_ratio
 - 再按共同日期做对齐
 - FX 在对齐后按日期前向填充
 
+这也意味着：
+
+- FX CSV 不需要覆盖每个自然日
+- 只要工作日参考汇率能覆盖研究窗口，项目会在对齐后前向填充
+
 ## `--constant-fx-rate` 与 `--fx-csv`
 
 ### `--constant-fx-rate`
@@ -66,6 +82,19 @@ h_close_cny = h_close_hkd * fx_rate * share_ratio
 - 正式回测
 - 复现实验
 - 需要保留历史汇率波动影响的研究
+
+脚本产出的 CSV 结构示例：
+
+```text
+date,fx_rate,eur_cny,eur_hkd
+2018-01-02,0.7834,7.8023,9.9594
+...
+```
+
+其中：
+
+- `fx_rate` 是项目实际读取的 `HKD/CNY`
+- `eur_cny` 和 `eur_hkd` 只是为了追溯换算来源，主回测会忽略它们
 
 ## Same-Issuer 校验
 

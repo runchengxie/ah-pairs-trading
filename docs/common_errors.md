@@ -46,6 +46,15 @@
 处理：
 
 - 正式回测：提供 `--fx-csv`
+- 如果你手头没有 FX CSV，可以先运行：
+
+```bash
+python scripts/fetch_fx_history.py \
+  --start-date 2018-01-01 \
+  --end-date 2024-12-31 \
+  --output-csv data/fx/hkdcny_2018_2024.csv
+```
+
 - 快速验证：临时提供 `--constant-fx-rate`
 
 ## 5. `601857/00883` 这种代码对直接被拦下
