@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -94,9 +96,9 @@ def test_prepare_signal_frame_creates_zscores_and_direction_labels() -> None:
 def test_load_ah_pair_data_reuses_cached_remote_history(tmp_path, monkeypatch) -> None:
     """Remote A/H histories should be fetched once and then served from disk cache."""
 
-    index = pd.date_range("2024-01-02", periods=6, freq="B")
-    a_history = pd.DataFrame({"date": index, "close": [10.0, 10.2, 10.1, 10.4, 10.6, 10.5]})
-    h_history = pd.DataFrame({"date": index, "close": [8.8, 8.9, 9.0, 9.2, 9.1, 9.3]})
+    index = pd.date_range("2024-01-02", periods=7, freq="B")
+    a_history = pd.DataFrame({"date": index, "close": [10.0, 10.2, 10.1, 10.4, 10.6, 10.5, 10.7]})
+    h_history = pd.DataFrame({"date": index, "close": [8.8, 8.9, 9.0, 9.2, 9.1, 9.3, 9.4]})
     fetch_calls = {"a": 0, "h": 0}
 
     def fake_fetch_a(symbol: str, start_date: str, end_date: str, adjust: str = "qfq") -> pd.DataFrame:
@@ -126,6 +128,134 @@ def test_load_ah_pair_data_reuses_cached_remote_history(tmp_path, monkeypatch) -
     assert fetch_calls == {"a": 1, "h": 1}
     pd.testing.assert_frame_equal(first.aligned_prices, second.aligned_prices)
     pd.testing.assert_frame_equal(first.model_prices, second.model_prices)
+
+
+def test_load_ah_pair_data_expands_remote_history_incrementally(tmp_path, monkeypatch) -> None:
+    """Expanding a requested window should fetch only the uncovered left/right gaps."""
+
+    index = pd.date_range("2024-01-01", periods=8, freq="B")
+    a_history = pd.DataFrame({"date": index, "close": [10.0, 10.1, 10.3, 10.4, 10.6, 10.7, 10.8, 10.9]})
+    h_history = pd.DataFrame({"date": index, "close": [8.8, 8.9, 9.0, 9.2, 9.1, 9.3, 9.4, 9.5]})
+    fetch_calls: dict[str, list[tuple[str, str, str, str]]] = {"a": [], "h": []}
+
+    def fake_fetch_a(symbol: str, start_date: str, end_date: str, adjust: str = "qfq") -> pd.DataFrame:
+        fetch_calls["a"].append((symbol, start_date, end_date, adjust))
+        mask = (a_history["date"] >= pd.Timestamp(start_date)) & (a_history["date"] <= pd.Timestamp(end_date))
+        return a_history.loc[mask].copy()
+
+    def fake_fetch_h(symbol: str, start_date: str, end_date: str, adjust: str = "qfq") -> pd.DataFrame:
+        fetch_calls["h"].append((symbol, start_date, end_date, adjust))
+        mask = (h_history["date"] >= pd.Timestamp(start_date)) & (h_history["date"] <= pd.Timestamp(end_date))
+        return h_history.loc[mask].copy()
+
+    monkeypatch.setattr("ah_pairs_trading.data.fetch_a_share_history", fake_fetch_a)
+    monkeypatch.setattr("ah_pairs_trading.data.fetch_h_share_history", fake_fetch_h)
+
+    cache_dir = tmp_path / "cache"
+    base_kwargs = {
+        "a_symbol": "600036",
+        "h_symbol": "03968",
+        "train_end_date": "2024-01-08",
+        "data": DataConfig(constant_fx_rate=0.91),
+        "cache_dir": cache_dir,
+    }
+
+    narrow = PipelineConfig(start_date="2024-01-03", end_date="2024-01-08", **base_kwargs)
+    wide = PipelineConfig(start_date="2024-01-01", end_date="2024-01-10", **base_kwargs)
+    covered = PipelineConfig(start_date="2024-01-02", end_date="2024-01-09", **base_kwargs)
+
+    load_ah_pair_data(narrow)
+    widened = load_ah_pair_data(wide)
+    covered_result = load_ah_pair_data(covered)
+
+    assert fetch_calls["a"] == [
+        ("600036", "2024-01-03", "2024-01-08", "qfq"),
+        ("600036", "2024-01-01", "2024-01-02", "qfq"),
+        ("600036", "2024-01-09", "2024-01-10", "qfq"),
+    ]
+    assert fetch_calls["h"] == [
+        ("03968", "2024-01-03", "2024-01-08", "qfq"),
+        ("03968", "2024-01-01", "2024-01-02", "qfq"),
+        ("03968", "2024-01-09", "2024-01-10", "qfq"),
+    ]
+    assert widened.model_prices.index.min() == pd.Timestamp("2024-01-01")
+    assert widened.model_prices.index.max() == pd.Timestamp("2024-01-10")
+    assert covered_result.model_prices.index.min() == pd.Timestamp("2024-01-02")
+    assert covered_result.model_prices.index.max() == pd.Timestamp("2024-01-09")
+
+    manifest_path = next((cache_dir / "data" / "a_share_history").glob("*.json"))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["cache_kind"] == "incremental_history"
+    assert manifest["artifact_format"] == "pickle"
+    assert manifest["coverage_start"] == "2024-01-01"
+    assert manifest["coverage_end"] == "2024-01-10"
+    assert manifest["observation_count"] == len(index)
+    assert manifest["identity"]["symbol"] == "600036"
+
+
+def test_load_ah_pair_data_refresh_cache_rebuilds_master_history_without_shrinking_coverage(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """A refreshed run should rebuild the full known master window instead of shrinking it to the new request."""
+
+    index = pd.date_range("2024-01-01", periods=8, freq="B")
+    a_history = pd.DataFrame({"date": index, "close": [10.0, 10.1, 10.3, 10.4, 10.6, 10.7, 10.8, 10.9]})
+    h_history = pd.DataFrame({"date": index, "close": [8.8, 8.9, 9.0, 9.2, 9.1, 9.3, 9.4, 9.5]})
+    fetch_calls: dict[str, list[tuple[str, str, str, str]]] = {"a": [], "h": []}
+
+    def fake_fetch_a(symbol: str, start_date: str, end_date: str, adjust: str = "qfq") -> pd.DataFrame:
+        fetch_calls["a"].append((symbol, start_date, end_date, adjust))
+        mask = (a_history["date"] >= pd.Timestamp(start_date)) & (a_history["date"] <= pd.Timestamp(end_date))
+        return a_history.loc[mask].copy()
+
+    def fake_fetch_h(symbol: str, start_date: str, end_date: str, adjust: str = "qfq") -> pd.DataFrame:
+        fetch_calls["h"].append((symbol, start_date, end_date, adjust))
+        mask = (h_history["date"] >= pd.Timestamp(start_date)) & (h_history["date"] <= pd.Timestamp(end_date))
+        return h_history.loc[mask].copy()
+
+    monkeypatch.setattr("ah_pairs_trading.data.fetch_a_share_history", fake_fetch_a)
+    monkeypatch.setattr("ah_pairs_trading.data.fetch_h_share_history", fake_fetch_h)
+
+    cache_dir = tmp_path / "cache"
+    baseline = PipelineConfig(
+        a_symbol="600036",
+        h_symbol="03968",
+        start_date="2024-01-01",
+        end_date="2024-01-10",
+        train_end_date="2024-01-08",
+        data=DataConfig(constant_fx_rate=0.91),
+        cache_dir=cache_dir,
+    )
+    refreshed = PipelineConfig(
+        a_symbol="600036",
+        h_symbol="03968",
+        start_date="2024-01-03",
+        end_date="2024-01-08",
+        train_end_date="2024-01-08",
+        data=DataConfig(constant_fx_rate=0.91),
+        cache_dir=cache_dir,
+        refresh_cache=True,
+    )
+
+    load_ah_pair_data(baseline)
+    load_ah_pair_data(refreshed)
+
+    assert fetch_calls["a"] == [
+        ("600036", "2024-01-01", "2024-01-10", "qfq"),
+        ("600036", "2024-01-01", "2024-01-10", "qfq"),
+    ]
+    assert fetch_calls["h"] == [
+        ("03968", "2024-01-01", "2024-01-10", "qfq"),
+        ("03968", "2024-01-01", "2024-01-10", "qfq"),
+    ]
+
+    manifest_path = next((cache_dir / "data" / "a_share_history").glob("*.json"))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["coverage_start"] == "2024-01-01"
+    assert manifest["coverage_end"] == "2024-01-10"
+    assert manifest["last_requested_start_date"] == "2024-01-03"
+    assert manifest["last_requested_end_date"] == "2024-01-08"
 
 
 def test_load_ah_pair_data_missing_local_history_reports_recovery_hint(tmp_path) -> None:

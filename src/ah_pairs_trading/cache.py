@@ -99,6 +99,11 @@ def load_pickle(path: Path) -> Any:
         return pickle.load(handle)
 
 
+def load_json(path: Path) -> Any:
+    with path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
 class StageCache:
     """Disk-backed stage cache that can resume deterministic pipeline steps."""
 

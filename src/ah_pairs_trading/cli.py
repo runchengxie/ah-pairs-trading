@@ -190,12 +190,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--refresh-cache",
         action="store_true",
-        help="Ignore existing cache entries and rebuild them from fresh data and calculations.",
+        help="Rebuild market-data master histories from fresh downloads and ignore existing stage-cache entries for this run.",
     )
     parser.add_argument(
         "--resume-from-cache",
         action="store_true",
-        help="Reuse cached pipeline stages so interrupted runs can continue from completed checkpoints without bypassing validation checks.",
+        help="Reuse cached pipeline stages only; the market-data cache still uses its default automatic incremental symbol-history behavior.",
     )
     parser.add_argument(
         "--output-dir",

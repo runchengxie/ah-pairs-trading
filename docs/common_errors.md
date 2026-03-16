@@ -101,3 +101,4 @@ python scripts/fetch_fx_history.py \
 
 - 先安装项目依赖
 - 或改为显式传本地 CSV
+- 如果你怀疑本地 symbol 主档缓存已经过期或不一致，可以加 `--refresh-cache` 强制重建

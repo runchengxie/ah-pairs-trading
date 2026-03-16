@@ -96,13 +96,13 @@
 ## 缓存与输出
 
 - `--cache-dir`
-  缓存目录，默认 `.cache/ah_pairs_trading`
+  缓存目录，默认 `.cache/ah_pairs_trading`。其中原始市场数据会按 symbol 维护增量主档，pipeline stage cache 也会放在这里
 - `--no-cache`
   关闭磁盘缓存
 - `--refresh-cache`
-  忽略已有缓存并重新拉数/重算
+  重建原始市场数据主档，并忽略本次运行可用的 stage cache
 - `--resume-from-cache`
-  恢复已完成的 pipeline 阶段，但不会跳过 guardrail
+  只恢复已完成的 pipeline 阶段；不会改变原始市场数据的自动增量缓存逻辑，也不会跳过 guardrail
 - `--output-dir`
   输出目录，用于保存 CSV、PNG、JSON、Markdown 摘要
 

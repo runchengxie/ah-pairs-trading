@@ -40,7 +40,8 @@ pairs-trading \
 
 说明：
 
-- A/H 历史会由 AkShare 在线拉取并写入 `.cache/ah_pairs_trading`
+- A/H 历史会由 AkShare 在线拉取，并在 `.cache/ah_pairs_trading` 下维护按 symbol 的增量主档缓存
+- 后续扩大回测窗口时，缓存会优先复用已有覆盖区间，只补抓左侧或右侧缺口，并更新旁边的 JSON manifest
 - `--constant-fx-rate` 只适合快速验证或原型测试
 - `--allow-non-coint` 只适合 smoke test 或宽松探索
 - 没有显式传 `--execution-mode` 时，默认是 `long_cheaper_leg_only`

@@ -10,8 +10,8 @@
 优先级规则如下：
 
 - 如果显式传了 `--a-csv` / `--h-csv` / `--fx-csv`，程序会直接使用这些文件
-- 如果没有显式传 A/H CSV，程序会先查本地缓存
-- 本地没有缓存时，才会通过 AkShare 在线拉取 A/H 历史
+- 如果没有显式传 A/H CSV，程序会先查本地增量主档缓存
+- 本地主档没有覆盖请求区间时，才会通过 AkShare 在线补抓缺口
 
 主回测 CLI 不会自动联网拉取 FX，必须自己提供：
 
@@ -124,8 +124,24 @@ date,fx_rate,eur_cny,eur_hkd
 
 这里有两类不同缓存：
 
-- 数据缓存：A/H 历史行情缓存，默认会自动参与
+- 数据缓存：A/H 与 benchmark 的原始历史主档缓存，默认会自动参与
 - 阶段缓存：pipeline 中间计算结果缓存，只有显式加 `--resume-from-cache` 才会恢复
+
+### 数据缓存现在怎么工作
+
+- A/H 与 online benchmark 不再按“某次请求区间结果”整块缓存
+- 缓存单位改成了 symbol 级主档，例如某个 A 股代码会在 `data/a_share_history/` 下维护一份累计历史
+- 每个主档旁边都有一份 JSON manifest，记录 `coverage_start`、`coverage_end`、`observation_count`、最近一次请求窗口等元数据
+- 如果新的回测窗口被现有主档完全覆盖，程序不会重新抓数
+- 如果新的窗口只在左边或右边超出已缓存区间，程序只会补抓缺口，再合并回主档
+- `--refresh-cache` 会重建该 symbol 已知覆盖范围内的主档，不会把主档缩成当前请求子区间
+
+### 当前存储分层
+
+- 原始市场数据主档目前仍然使用 `pickle + json manifest`
+- pipeline stage cache 也继续使用 `pickle`
+- 这样做是为了保持依赖轻量；仓库当前没有引入 Parquet/DuckDB 运行时依赖
+- 如果后面要做更大规模的多标的研究，再把原始数据主档迁到 Parquet、让 DuckDB 直接查 Parquet，会更合适
 
 `--resume-from-cache` 的作用是：
 
@@ -136,6 +152,7 @@ date,fx_rate,eur_cny,eur_hkd
 - 跳过训练集协整显著性校验
 - 改写数据源优先级
 - 把不存在的本地 CSV 自动变成在线拉取
+- 改变原始市场数据的增量缓存策略
 
 ## 本地 CSV 的使用建议
 

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
 
-from .cache import atomic_json_dump, atomic_pickle_dump, build_cache_key, load_pickle
+from .cache import atomic_json_dump, atomic_pickle_dump, build_cache_key, load_json, load_pickle
 from .config import BenchmarkMarket, DataConfig, PipelineConfig
 
 _DATE_ALIASES = ("date", "日期", "datetime", "时间")
@@ -17,6 +18,8 @@ _OPEN_ALIASES = ("open", "开盘")
 _HIGH_ALIASES = ("high", "最高")
 _LOW_ALIASES = ("low", "最低")
 _VOLUME_ALIASES = ("volume", "成交量", "vol")
+_MARKET_DATA_CACHE_VERSION = 2
+_MARKET_DATA_ARTIFACT_FORMAT = "pickle"
 
 
 @dataclass(slots=True)
@@ -195,18 +198,187 @@ def fetch_h_share_history(symbol: str, start_date: str, end_date: str, adjust: s
     return result.loc[start_date:end_date]
 
 
+def _normalize_cache_date(value: str) -> str:
+    return pd.Timestamp(value).strftime("%Y-%m-%d")
+
+
+def _previous_day(value: str) -> str:
+    return (pd.Timestamp(value) - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+
+
+def _next_day(value: str) -> str:
+    return (pd.Timestamp(value) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+
+
+def _history_cache_paths(
+    cache_dir: Path,
+    cache_namespace: str,
+    cache_identity: dict[str, str | float | None],
+) -> tuple[Path, Path]:
+    cache_root = Path(cache_dir) / "data" / cache_namespace
+    cache_key = build_cache_key(
+        {
+            "cache_kind": "incremental_history",
+            "version": _MARKET_DATA_CACHE_VERSION,
+            "identity": cache_identity,
+        }
+    )
+    artifact_path = cache_root / f"{cache_key}.pkl"
+    metadata_path = cache_root / f"{cache_key}.json"
+    return artifact_path, metadata_path
+
+
+def _load_history_manifest(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    payload = load_json(path)
+    return payload if isinstance(payload, dict) else None
+
+
+def _history_frame_coverage(frame: pd.DataFrame | None) -> tuple[str | None, str | None]:
+    if frame is None or frame.empty:
+        return None, None
+    index = pd.to_datetime(frame.index).tz_localize(None)
+    return index.min().strftime("%Y-%m-%d"), index.max().strftime("%Y-%m-%d")
+
+
+def _merge_history_frames(*frames: pd.DataFrame | None) -> pd.DataFrame:
+    normalized_frames: list[pd.DataFrame] = []
+    empty_template: pd.DataFrame | None = None
+    for frame in frames:
+        if frame is None:
+            continue
+        normalized = standardize_history_frame(frame)
+        if empty_template is None:
+            empty_template = normalized.iloc[0:0].copy()
+        if normalized.empty:
+            continue
+        normalized_frames.append(normalized)
+
+    if not normalized_frames:
+        return pd.DataFrame() if empty_template is None else empty_template
+
+    merged = pd.concat(normalized_frames).sort_index()
+    return merged.loc[~merged.index.duplicated(keep="last")]
+
+
+def _build_history_manifest(
+    frame: pd.DataFrame,
+    *,
+    cache_identity: dict[str, str | float | None],
+    requested_start: str,
+    requested_end: str,
+) -> dict[str, Any]:
+    coverage_start, coverage_end = _history_frame_coverage(frame)
+    return {
+        "cache_kind": "incremental_history",
+        "version": _MARKET_DATA_CACHE_VERSION,
+        "artifact_format": _MARKET_DATA_ARTIFACT_FORMAT,
+        "identity": cache_identity,
+        "coverage_start": coverage_start,
+        "coverage_end": coverage_end,
+        "observation_count": int(len(frame)),
+        "last_requested_start_date": _normalize_cache_date(requested_start),
+        "last_requested_end_date": _normalize_cache_date(requested_end),
+        "updated_at": pd.Timestamp.now(tz="UTC").isoformat(),
+    }
+
+
+def _resolve_incremental_history(
+    fetch_window: Callable[[str, str], pd.DataFrame],
+    request_start: str,
+    request_end: str,
+    *,
+    cache_dir: Path,
+    cache_namespace: str,
+    cache_identity: dict[str, str | float | None],
+    refresh_cache: bool,
+) -> pd.DataFrame:
+    artifact_path, metadata_path = _history_cache_paths(cache_dir, cache_namespace, cache_identity)
+    cached_frame = None
+    if artifact_path.exists():
+        cached_frame = standardize_history_frame(load_pickle(artifact_path))
+    manifest = _load_history_manifest(metadata_path)
+    requested_start = _normalize_cache_date(request_start)
+    requested_end = _normalize_cache_date(request_end)
+    cached_start, cached_end = _history_frame_coverage(cached_frame)
+
+    if refresh_cache:
+        rebuild_start = min(value for value in (requested_start, cached_start) if value is not None)
+        rebuild_end = max(value for value in (requested_end, cached_end) if value is not None)
+        refreshed_frame = standardize_history_frame(fetch_window(rebuild_start, rebuild_end))
+        atomic_pickle_dump(refreshed_frame, artifact_path)
+        atomic_json_dump(
+            _build_history_manifest(
+                refreshed_frame,
+                cache_identity=cache_identity,
+                requested_start=requested_start,
+                requested_end=requested_end,
+            ),
+            metadata_path,
+        )
+        return refreshed_frame.loc[requested_start:requested_end]
+
+    if cached_frame is None or cached_frame.empty:
+        fetched_frame = standardize_history_frame(fetch_window(requested_start, requested_end))
+        atomic_pickle_dump(fetched_frame, artifact_path)
+        atomic_json_dump(
+            _build_history_manifest(
+                fetched_frame,
+                cache_identity=cache_identity,
+                requested_start=requested_start,
+                requested_end=requested_end,
+            ),
+            metadata_path,
+        )
+        return fetched_frame.loc[requested_start:requested_end]
+
+    missing_segments: list[pd.DataFrame] = []
+    if cached_start is not None and requested_start < cached_start:
+        missing_segments.append(fetch_window(requested_start, _previous_day(cached_start)))
+    if cached_end is not None and requested_end > cached_end:
+        missing_segments.append(fetch_window(_next_day(cached_end), requested_end))
+
+    if missing_segments:
+        merged_frame = _merge_history_frames(cached_frame, *missing_segments)
+        atomic_pickle_dump(merged_frame, artifact_path)
+        atomic_json_dump(
+            _build_history_manifest(
+                merged_frame,
+                cache_identity=cache_identity,
+                requested_start=requested_start,
+                requested_end=requested_end,
+            ),
+            metadata_path,
+        )
+        return merged_frame.loc[requested_start:requested_end]
+
+    if manifest is None or manifest.get("version") != _MARKET_DATA_CACHE_VERSION:
+        atomic_json_dump(
+            _build_history_manifest(
+                cached_frame,
+                cache_identity=cache_identity,
+                requested_start=requested_start,
+                requested_end=requested_end,
+            ),
+            metadata_path,
+        )
+    return cached_frame.loc[requested_start:requested_end]
+
+
 def _resolve_frame(
     supplied_frame: pd.DataFrame | None,
     csv_path: Path | None,
-    fetcher,
-    *fetch_args,
+    fetch_window: Callable[[str, str], pd.DataFrame],
     csv_argument_name: str = "--*-csv",
     missing_file_hint: str = (
         "Point the argument at a real file, or remove the local CSV option to use automatic loading instead."
     ),
+    request_start: str | None = None,
+    request_end: str | None = None,
     cache_dir: Path | None = None,
     cache_namespace: str | None = None,
-    cache_payload: dict[str, str | float | None] | None = None,
+    cache_identity: dict[str, str | float | None] | None = None,
     refresh_cache: bool = False,
 ) -> pd.DataFrame:
     if supplied_frame is not None:
@@ -216,20 +388,22 @@ def _resolve_frame(
             raise _missing_csv_error(csv_path, argument_name=csv_argument_name, hint=missing_file_hint)
         return load_history_csv(csv_path)
 
-    if cache_dir is not None and cache_namespace is not None and cache_payload is not None:
-        cache_key = build_cache_key(cache_payload)
-        cache_root = Path(cache_dir) / "data" / cache_namespace
-        artifact_path = cache_root / f"{cache_key}.pkl"
-        metadata_path = cache_root / f"{cache_key}.json"
-        if artifact_path.exists() and not refresh_cache:
-            return load_pickle(artifact_path)
+    if cache_dir is not None and cache_namespace is not None and cache_identity is not None:
+        if request_start is None or request_end is None:
+            raise ValueError("Incremental history caching requires `request_start` and `request_end`.")
+        return _resolve_incremental_history(
+            fetch_window,
+            request_start,
+            request_end,
+            cache_dir=cache_dir,
+            cache_namespace=cache_namespace,
+            cache_identity=cache_identity,
+            refresh_cache=refresh_cache,
+        )
 
-        frame = fetcher(*fetch_args)
-        atomic_pickle_dump(frame, artifact_path)
-        atomic_json_dump(cache_payload, metadata_path)
-        return frame
-
-    return fetcher(*fetch_args)
+    if request_start is None or request_end is None:
+        raise ValueError("Automatic history loading requires `request_start` and `request_end`.")
+    return standardize_history_frame(fetch_window(request_start, request_end))
 
 
 def _resolve_fx_frame(
@@ -473,23 +647,24 @@ def load_ah_pair_data(
     resolved_a = _resolve_frame(
         a_frame,
         config.data.a_csv_path,
-        fetch_a_share_history,
-        config.a_symbol,
-        config.start_date,
-        config.end_date,
-        config.data.a_adjust,
+        lambda start_date, end_date: fetch_a_share_history(
+            config.a_symbol,
+            start_date,
+            end_date,
+            config.data.a_adjust,
+        ),
         csv_argument_name="--a-csv",
         missing_file_hint=(
             "Remove `--a-csv` to let the CLI load the A-share history from AkShare and the local data cache "
             "instead."
         ),
+        request_start=config.start_date,
+        request_end=config.end_date,
         cache_dir=config.cache_dir,
         cache_namespace="a_share_history",
-        cache_payload={
+        cache_identity={
             "provider": config.data.data_provider,
             "symbol": config.a_symbol,
-            "start_date": config.start_date,
-            "end_date": config.end_date,
             "adjust": config.data.a_adjust,
         },
         refresh_cache=config.refresh_cache,
@@ -497,23 +672,24 @@ def load_ah_pair_data(
     resolved_h = _resolve_frame(
         h_frame,
         config.data.h_csv_path,
-        fetch_h_share_history,
-        config.h_symbol,
-        config.start_date,
-        config.end_date,
-        config.data.h_adjust,
+        lambda start_date, end_date: fetch_h_share_history(
+            config.h_symbol,
+            start_date,
+            end_date,
+            config.data.h_adjust,
+        ),
         csv_argument_name="--h-csv",
         missing_file_hint=(
             "Remove `--h-csv` to let the CLI load the H-share history from AkShare and the local data cache "
             "instead."
         ),
+        request_start=config.start_date,
+        request_end=config.end_date,
         cache_dir=config.cache_dir,
         cache_namespace="h_share_history",
-        cache_payload={
+        cache_identity={
             "provider": config.data.data_provider,
             "symbol": config.h_symbol,
-            "start_date": config.start_date,
-            "end_date": config.end_date,
             "adjust": config.data.h_adjust,
         },
         refresh_cache=config.refresh_cache,
@@ -535,26 +711,26 @@ def load_ah_pair_data(
         resolved_benchmark = _resolve_frame(
             benchmark_frame,
             config.data.benchmark_csv_path,
-            _fetch_benchmark_history,
-            config.benchmark_symbol,
-            config.benchmark_market,
-            config.start_date,
-            config.end_date,
-            config.data,
+            lambda start_date, end_date: _fetch_benchmark_history(
+                config.benchmark_symbol,
+                config.benchmark_market,
+                start_date,
+                end_date,
+                config.data,
+            ),
             csv_argument_name="--benchmark-csv",
             missing_file_hint=(
                 "Remove `--benchmark-csv` to let the CLI fetch the benchmark online, or point it at a real file."
             ),
+            request_start=config.start_date,
+            request_end=config.end_date,
             cache_dir=config.cache_dir,
             cache_namespace="benchmark_history",
-            cache_payload={
+            cache_identity={
                 "provider": config.data.data_provider,
                 "symbol": config.benchmark_symbol,
                 "benchmark_market": config.benchmark_market,
-                "start_date": config.start_date,
-                "end_date": config.end_date,
-                "a_adjust": config.data.a_adjust,
-                "h_adjust": config.data.h_adjust,
+                "adjust": config.data.a_adjust if config.benchmark_market == "a" else config.data.h_adjust,
             },
             refresh_cache=config.refresh_cache,
         )
