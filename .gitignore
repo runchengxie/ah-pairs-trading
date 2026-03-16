@@ -221,3 +221,7 @@ full_project_source.txt
 # Generated research outputs
 /outputs/
 
+# Locally generated FX inputs
+/data/fx/*.csv
+!/data/fx/.gitkeep
+
