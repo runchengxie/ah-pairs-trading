@@ -12,6 +12,7 @@ from ah_pairs_trading.analysis import (
     fit_var_diagnostics,
     matrix_ols,
     run_cointegration_analysis,
+    run_rolling_ecm,
     run_rolling_cointegration,
 )
 
@@ -66,8 +67,17 @@ def test_rolling_cointegration_and_var_outputs_are_non_empty() -> None:
         window_size=120,
         step_size=20,
     )
+    rolling_ecm = run_rolling_ecm(
+        log_prices,
+        dependent_symbol="KO",
+        independent_symbol="PEP",
+        window_size=120,
+        step_size=20,
+    )
     assert not rolling_frame.empty
     assert {"p_value", "significant", "intercept", "hedge_ratio", "residual_std"} <= set(rolling_frame.columns)
+    assert not rolling_ecm.empty
+    assert {"error_correction_speed", "p_value", "significant_negative"} <= set(rolling_ecm.columns)
 
     diagnostics = fit_var_diagnostics(log_prices, symbols=("KO", "PEP"), max_lags=3)
     assert diagnostics.lag_order >= 1

@@ -37,8 +37,22 @@ def test_build_ah_price_frame_uses_joint_calendar_and_fx_conversion() -> None:
     h_index = pd.to_datetime(["2024-01-02", "2024-01-04", "2024-01-05"])
     fx_index = pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05"])
 
-    a_frame = pd.DataFrame({"date": a_index, "close": [10.0, 10.2, 10.5, 10.4]})
-    h_frame = pd.DataFrame({"date": h_index, "close": [9.0, 9.4, 9.2]})
+    a_frame = pd.DataFrame(
+        {
+            "date": a_index,
+            "open": [9.9, 10.1, 10.4, 10.3],
+            "close": [10.0, 10.2, 10.5, 10.4],
+            "volume": [1000.0, 1100.0, 1200.0, 1300.0],
+        }
+    )
+    h_frame = pd.DataFrame(
+        {
+            "date": h_index,
+            "open": [8.9, 9.3, 9.1],
+            "close": [9.0, 9.4, 9.2],
+            "volume": [900.0, 950.0, 980.0],
+        }
+    )
     fx_frame = pd.DataFrame({"date": fx_index, "close": [0.91, 0.92, 0.93, 0.94]})
 
     aligned = build_ah_price_frame(
@@ -52,6 +66,8 @@ def test_build_ah_price_frame_uses_joint_calendar_and_fx_conversion() -> None:
 
     expected_index = pd.to_datetime(["2024-01-02", "2024-01-04", "2024-01-05"])
     assert aligned.index.equals(expected_index)
+    assert aligned.loc["2024-01-02", "a_open"] == 9.9
+    assert aligned.loc["2024-01-04", "h_open_cny"] == 9.3 * 0.93
     assert aligned.loc["2024-01-04", "h_close_cny"] == 9.4 * 0.93
     assert aligned.loc["2024-01-05", "ah_premium_pct"] == 10.4 / (9.2 * 0.94) - 1.0
 
@@ -75,6 +91,8 @@ def test_prepare_signal_frame_creates_zscores_and_direction_labels() -> None:
         hedge_ratio=hedge_ratio,
         z_window=15,
         min_periods=15,
+        adv_window=10,
+        adv_min_periods=5,
     )
 
     assert signal_frame["intercept"].notna().all()
@@ -93,6 +111,7 @@ def test_prepare_signal_frame_creates_zscores_and_direction_labels() -> None:
     assert set(signal_frame["ret_spread_sma_cheap_leg"].dropna().unique()) <= {"a", "h", "flat"}
     assert signal_frame["ret_spread_ema_filter_pass"].dropna().isin([True, False]).all()
     assert signal_frame["ret_spread_sma_filter_pass"].dropna().isin([True, False]).all()
+    assert {"a_open", "h_open", "a_adv", "h_adv"} <= set(signal_frame.columns)
 
 
 def test_prepare_signal_frame_supports_time_varying_parameters_and_cointegration_gate() -> None:
@@ -125,8 +144,13 @@ def test_prepare_signal_frame_supports_time_varying_parameters_and_cointegration
         hedge_ratio=hedge_ratio,
         z_window=12,
         min_periods=12,
+        adv_window=10,
+        adv_min_periods=5,
         cointegration_p_value=cointegration_p_value,
         cointegration_significant=cointegration_significant,
+        ecm_speed=pd.Series(-0.1, index=index, name="ecm_speed"),
+        ecm_p_value=pd.Series(0.02, index=index, name="ecm_p_value"),
+        ecm_gate_pass=pd.Series(True, index=index, dtype="boolean", name="ecm_gate_pass"),
     )
 
     pd.testing.assert_series_equal(signal_frame["intercept"], intercept)
@@ -137,6 +161,7 @@ def test_prepare_signal_frame_supports_time_varying_parameters_and_cointegration
         signal_frame["cointegration_gate_pass"],
         cointegration_significant.rename("cointegration_gate_pass"),
     )
+    assert signal_frame["ecm_gate_pass"].dropna().isin([True]).all()
     pd.testing.assert_series_equal(signal_frame["ret_spread"], signal_frame["spread"].diff().rename("ret_spread"))
 
 

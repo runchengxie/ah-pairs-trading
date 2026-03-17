@@ -450,18 +450,28 @@ def build_ah_price_frame(
     if a_history.empty or h_history.empty:
         raise ValueError("The requested A/H date range produced an empty history frame.")
 
+    a_open = a_history["open"].astype(float) if "open" in a_history.columns else a_history["close"].astype(float)
+    h_open_hkd = h_history["open"].astype(float) if "open" in h_history.columns else h_history["close"].astype(float)
+    a_volume = a_history["volume"].astype(float) if "volume" in a_history.columns else pd.Series(np.nan, index=a_history.index)
+    h_volume = h_history["volume"].astype(float) if "volume" in h_history.columns else pd.Series(np.nan, index=h_history.index)
+
     aligned = pd.DataFrame(
         {
             "a_close": a_history["close"],
+            "a_open": a_open,
+            "a_volume": a_volume,
             "h_close_hkd": h_history["close"],
+            "h_open_hkd": h_open_hkd,
+            "h_volume": h_volume,
         }
-    ).dropna()
+    ).dropna(subset=["a_close", "a_open", "h_close_hkd", "h_open_hkd"])
     aligned = aligned.loc[aligned.index.intersection(a_history.index).intersection(h_history.index)]
     aligned = aligned.sort_index()
 
     fx_series = fx_history["fx_rate"].reindex(aligned.index).ffill()
     aligned = aligned.join(fx_series.rename("fx_rate"), how="left").dropna(subset=["fx_rate"])
     aligned["h_close_cny"] = aligned["h_close_hkd"] * aligned["fx_rate"] * float(share_ratio)
+    aligned["h_open_cny"] = aligned["h_open_hkd"] * aligned["fx_rate"] * float(share_ratio)
     aligned["ah_premium_pct"] = aligned["a_close"] / aligned["h_close_cny"] - 1.0
     return aligned
 
@@ -475,7 +485,15 @@ def prepare_model_price_frame(aligned_prices: pd.DataFrame, a_symbol: str, h_sym
             h_symbol: aligned_prices["h_close_cny"].astype(float),
         }
     )
-    return result.dropna()
+    if "a_open" in aligned_prices.columns:
+        result["a_open"] = aligned_prices["a_open"].astype(float)
+    if "h_open_cny" in aligned_prices.columns:
+        result["h_open"] = aligned_prices["h_open_cny"].astype(float)
+    if "a_volume" in aligned_prices.columns:
+        result["a_volume"] = aligned_prices["a_volume"].astype(float)
+    if "h_volume" in aligned_prices.columns:
+        result["h_volume"] = aligned_prices["h_volume"].astype(float)
+    return result.dropna(subset=[a_symbol, h_symbol])
 
 
 def prepare_log_price_frame(price_frame: pd.DataFrame) -> pd.DataFrame:
@@ -512,8 +530,13 @@ def prepare_signal_frame(
     min_periods: int | None = None,
     return_filter_window: int = 10,
     return_filter_min_periods: int | None = None,
+    adv_window: int = 20,
+    adv_min_periods: int | None = None,
     cointegration_p_value: pd.Series | None = None,
     cointegration_significant: pd.Series | None = None,
+    ecm_speed: pd.Series | None = None,
+    ecm_p_value: pd.Series | None = None,
+    ecm_gate_pass: pd.Series | None = None,
 ) -> pd.DataFrame:
     """Build rolling spread and z-score signals from A/H model prices."""
 
@@ -521,10 +544,16 @@ def prepare_signal_frame(
         raise ValueError("The rolling z-score window must be at least 2 observations.")
     if return_filter_window < 1:
         raise ValueError("The return-filter window must be at least 1 observation.")
+    if adv_window < 1:
+        raise ValueError("The ADV window must be at least 1 observation.")
 
     minimum_periods = min_periods or z_window
     return_minimum_periods = return_filter_min_periods or return_filter_window
+    adv_minimum_periods = adv_min_periods or adv_window
     signal_frame = model_prices[[a_symbol, h_symbol]].copy()
+    for optional_column in ("a_open", "h_open", "a_volume", "h_volume"):
+        if optional_column in model_prices.columns:
+            signal_frame[optional_column] = model_prices[optional_column].astype(float)
     intercept_series = _align_float_input(intercept, signal_frame.index, name="intercept")
     hedge_ratio_series = _align_float_input(hedge_ratio, signal_frame.index, name="hedge_ratio")
     log_prices = prepare_log_price_frame(signal_frame[[a_symbol, h_symbol]])
@@ -570,6 +599,18 @@ def prepare_signal_frame(
     signal_frame["ret_spread_sma_rolling_mean"] = ret_spread_sma_rolling_mean
     signal_frame["ret_spread_sma_rolling_std"] = ret_spread_sma_rolling_std
     signal_frame["ret_spread_sma_zscore"] = ret_spread_sma_zscore
+    if "a_open" not in signal_frame.columns:
+        signal_frame["a_open"] = signal_frame[a_symbol]
+    if "h_open" not in signal_frame.columns:
+        signal_frame["h_open"] = signal_frame[h_symbol]
+    if "a_volume" in signal_frame.columns:
+        signal_frame["a_adv"] = signal_frame["a_volume"].rolling(adv_window, min_periods=adv_minimum_periods).mean().shift(1)
+    else:
+        signal_frame["a_adv"] = np.nan
+    if "h_volume" in signal_frame.columns:
+        signal_frame["h_adv"] = signal_frame["h_volume"].rolling(adv_window, min_periods=adv_minimum_periods).mean().shift(1)
+    else:
+        signal_frame["h_adv"] = np.nan
     ema_filter_pass = pd.Series(pd.NA, index=signal_frame.index, dtype="boolean")
     sma_filter_pass = pd.Series(pd.NA, index=signal_frame.index, dtype="boolean")
     zscore_positive = zscore > 0
@@ -620,6 +661,12 @@ def prepare_signal_frame(
         )
         signal_frame["cointegration_significant"] = significant_series
         signal_frame["cointegration_gate_pass"] = significant_series
+    if ecm_speed is not None:
+        signal_frame["ecm_speed"] = _align_float_input(ecm_speed, signal_frame.index, name="ecm_speed")
+    if ecm_p_value is not None:
+        signal_frame["ecm_p_value"] = _align_float_input(ecm_p_value, signal_frame.index, name="ecm_p_value")
+    if ecm_gate_pass is not None:
+        signal_frame["ecm_gate_pass"] = _align_boolean_input(ecm_gate_pass, signal_frame.index, name="ecm_gate_pass")
     return signal_frame
 
 

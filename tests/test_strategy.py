@@ -11,6 +11,25 @@ from ah_pairs_trading.metrics import prepare_comparison_frame, rolling_beta, rol
 from ah_pairs_trading.strategy import backtest_relative_value_strategy, grid_search_entry_z
 
 
+def zero_cost_config() -> CostConfig:
+    return CostConfig(
+        a_buy_cost_bps=0.0,
+        a_sell_cost_bps=0.0,
+        h_buy_cost_bps=0.0,
+        h_sell_cost_bps=0.0,
+        h_stamp_duty_bps=0.0,
+        fx_conversion_bps=0.0,
+        a_slippage_bps=0.0,
+        h_slippage_bps=0.0,
+        a_impact_bps_per_100pct_adv=0.0,
+        h_impact_bps_per_100pct_adv=0.0,
+        a_short_borrow_apr_bps=0.0,
+        h_short_borrow_apr_bps=0.0,
+        a_long_financing_apr_bps=0.0,
+        h_long_financing_apr_bps=0.0,
+    )
+
+
 def make_ah_signal_frame(length: int = 220) -> tuple[pd.DataFrame, float]:
     """Create a deterministic A/H signal frame with repeated mean reversion."""
 
@@ -25,6 +44,10 @@ def make_ah_signal_frame(length: int = 220) -> tuple[pd.DataFrame, float]:
         {
             "600036": np.exp(log_a),
             "03968": np.exp(log_h),
+            "a_open": np.exp(log_a) * 1.001,
+            "h_open": np.exp(log_h) * 0.999,
+            "a_volume": np.full(length, 4_000_000.0),
+            "h_volume": np.full(length, 3_500_000.0),
         },
         index=index,
     )
@@ -36,6 +59,8 @@ def make_ah_signal_frame(length: int = 220) -> tuple[pd.DataFrame, float]:
         hedge_ratio=hedge_ratio,
         z_window=20,
         min_periods=20,
+        adv_window=20,
+        adv_min_periods=10,
     )
     return signal_frame, hedge_ratio
 
@@ -62,14 +87,7 @@ def test_long_cheaper_leg_backtest_generates_trades_and_positive_pnl() -> None:
             a_lot_size=100,
             h_lot_size=100,
         ),
-        cost_config=CostConfig(
-            a_buy_cost_bps=0.0,
-            a_sell_cost_bps=0.0,
-            h_buy_cost_bps=0.0,
-            h_sell_cost_bps=0.0,
-            h_stamp_duty_bps=0.0,
-            fx_conversion_bps=0.0,
-        ),
+        cost_config=zero_cost_config(),
     )
 
     assert result.summary.trade_count >= 4
@@ -108,14 +126,7 @@ def test_return_filter_can_block_entries() -> None:
             a_lot_size=100,
             h_lot_size=100,
         ),
-        cost_config=CostConfig(
-            a_buy_cost_bps=0.0,
-            a_sell_cost_bps=0.0,
-            h_buy_cost_bps=0.0,
-            h_sell_cost_bps=0.0,
-            h_stamp_duty_bps=0.0,
-            fx_conversion_bps=0.0,
-        ),
+        cost_config=zero_cost_config(),
     )
 
     assert result.summary.trade_count == 0
@@ -130,6 +141,10 @@ def test_cointegration_gate_blocks_entries_and_forces_exit() -> None:
         {
             "600036": [100.0, 100.0, 100.0, 100.0, 100.0],
             "03968": [50.0, 50.0, 50.0, 50.0, 50.0],
+            "a_open": [100.0, 100.0, 100.0, 100.0, 100.0],
+            "h_open": [50.0, 50.0, 50.0, 50.0, 50.0],
+            "a_adv": [1_000_000.0] * 5,
+            "h_adv": [1_000_000.0] * 5,
             "intercept": [0.1, 0.1, 0.1, 0.1, 0.1],
             "hedge_ratio": [1.0, 1.0, 1.0, 1.0, 1.0],
             "spread": [0.12, 0.14, 0.13, 0.12, 0.01],
@@ -161,19 +176,12 @@ def test_cointegration_gate_blocks_entries_and_forces_exit() -> None:
             a_lot_size=100,
             h_lot_size=100,
         ),
-        cost_config=CostConfig(
-            a_buy_cost_bps=0.0,
-            a_sell_cost_bps=0.0,
-            h_buy_cost_bps=0.0,
-            h_sell_cost_bps=0.0,
-            h_stamp_duty_bps=0.0,
-            fx_conversion_bps=0.0,
-        ),
+        cost_config=zero_cost_config(),
     )
 
     assert result.summary.trade_count == 1
     assert result.trades.iloc[0]["exit_reason"] == "cointegration_breakdown"
-    assert result.equity_curve.loc[index[2], "position"] == "flat"
+    assert result.equity_curve.loc[index[3], "position"] == "flat"
 
 
 def test_paired_backtest_and_grid_search_are_available() -> None:
@@ -194,14 +202,7 @@ def test_paired_backtest_and_grid_search_are_available() -> None:
         a_lot_size=100,
         h_lot_size=100,
     )
-    zero_costs = CostConfig(
-        a_buy_cost_bps=0.0,
-        a_sell_cost_bps=0.0,
-        h_buy_cost_bps=0.0,
-        h_sell_cost_bps=0.0,
-        h_stamp_duty_bps=0.0,
-        fx_conversion_bps=0.0,
-    )
+    zero_costs = zero_cost_config()
 
     best_entry_z, grid = grid_search_entry_z(
         signal_frame=signal_frame,
@@ -281,14 +282,7 @@ def test_paired_backtest_uses_row_level_hedge_ratio_for_sizing() -> None:
         a_lot_size=100,
         h_lot_size=100,
     )
-    zero_costs = CostConfig(
-        a_buy_cost_bps=0.0,
-        a_sell_cost_bps=0.0,
-        h_buy_cost_bps=0.0,
-        h_sell_cost_bps=0.0,
-        h_stamp_duty_bps=0.0,
-        fx_conversion_bps=0.0,
-    )
+    zero_costs = zero_cost_config()
 
     high_result = backtest_relative_value_strategy(
         signal_frame=high_hedge_ratio_frame,
@@ -335,15 +329,175 @@ def test_return_spread_entry_signal_mode_is_available() -> None:
             a_lot_size=100,
             h_lot_size=100,
         ),
-        cost_config=CostConfig(
-            a_buy_cost_bps=0.0,
-            a_sell_cost_bps=0.0,
-            h_buy_cost_bps=0.0,
-            h_sell_cost_bps=0.0,
-            h_stamp_duty_bps=0.0,
-            fx_conversion_bps=0.0,
-        ),
+        cost_config=zero_cost_config(),
     )
 
     assert result.summary.trade_count > 0
     assert "signal_score" in result.equity_curve.columns
+
+
+def test_next_open_execution_uses_lagged_signal_and_current_open_prices() -> None:
+    index = pd.date_range("2024-01-01", periods=4, freq="B")
+    signal_frame = pd.DataFrame(
+        {
+            "600036": [100.0, 101.0, 102.0, 103.0],
+            "03968": [50.0, 49.0, 48.5, 48.0],
+            "a_open": [100.0, 120.0, 121.0, 122.0],
+            "h_open": [50.0, 40.0, 39.5, 39.0],
+            "a_adv": [1_000_000.0] * 4,
+            "h_adv": [1_000_000.0] * 4,
+            "intercept": [0.1] * 4,
+            "hedge_ratio": [1.0] * 4,
+            "spread": [0.0, 0.0, 0.0, 0.0],
+            "zscore": [1.3, 0.1, 0.0, 0.0],
+            "cheap_leg": ["h", "flat", "flat", "flat"],
+        },
+        index=index,
+    )
+
+    result = backtest_relative_value_strategy(
+        signal_frame=signal_frame,
+        a_symbol="600036",
+        h_symbol="03968",
+        hedge_ratio=1.0,
+        strategy_config=StrategyConfig(
+            entry_z_candidates=(1.0,),
+            exit_z=0.25,
+            stop_z=2.0,
+            z_window=20,
+            z_min_periods=20,
+            max_holding_days=20,
+            initial_capital=100_000.0,
+            execution_mode="long_cheaper_leg_only",
+            execution_timing="next_open",
+        ),
+        cost_config=zero_cost_config(),
+    )
+
+    assert result.summary.trade_count == 1
+    assert result.trades.iloc[0]["entry_date"] == index[1]
+
+
+def test_ecm_gate_blocks_entries_and_forces_exit() -> None:
+    index = pd.date_range("2024-01-01", periods=5, freq="B")
+    signal_frame = pd.DataFrame(
+        {
+            "600036": [100.0, 100.0, 100.0, 100.0, 100.0],
+            "03968": [50.0, 50.0, 50.0, 50.0, 50.0],
+            "a_open": [100.0] * 5,
+            "h_open": [50.0] * 5,
+            "a_adv": [1_000_000.0] * 5,
+            "h_adv": [1_000_000.0] * 5,
+            "intercept": [0.1] * 5,
+            "hedge_ratio": [1.0] * 5,
+            "spread": [0.12, 0.14, 0.13, 0.12, 0.01],
+            "zscore": [1.2, 1.4, 1.1, 1.3, 0.1],
+            "cheap_leg": ["h", "h", "h", "h", "flat"],
+            "ecm_speed": [-0.2, -0.2, 0.1, 0.1, -0.1],
+            "ecm_p_value": [0.01, 0.01, 0.4, 0.4, 0.01],
+            "ecm_gate_pass": pd.Series([True, True, False, False, True], index=index, dtype="boolean"),
+        },
+        index=index,
+    )
+
+    result = backtest_relative_value_strategy(
+        signal_frame=signal_frame,
+        a_symbol="600036",
+        h_symbol="03968",
+        hedge_ratio=1.0,
+        strategy_config=StrategyConfig(
+            entry_z_candidates=(1.0,),
+            exit_z=0.25,
+            stop_z=2.5,
+            z_window=20,
+            z_min_periods=20,
+            max_holding_days=20,
+            initial_capital=100_000.0,
+            execution_mode="paired",
+            ecm_gate_mode="significant_negative",
+        ),
+        cost_config=zero_cost_config(),
+    )
+
+    assert result.summary.trade_count == 1
+    assert result.trades.iloc[0]["exit_reason"] == "ecm_breakdown"
+
+
+def test_adv_cap_reduces_position_size() -> None:
+    signal_frame, hedge_ratio = make_ah_signal_frame()
+    low_adv_frame = signal_frame.copy()
+    low_adv_frame["h_adv"] = 1_500.0
+
+    result = backtest_relative_value_strategy(
+        signal_frame=low_adv_frame,
+        a_symbol="600036",
+        h_symbol="03968",
+        hedge_ratio=hedge_ratio,
+        strategy_config=StrategyConfig(
+            entry_z_candidates=(0.9,),
+            exit_z=0.25,
+            stop_z=2.5,
+            z_window=20,
+            z_min_periods=20,
+            max_holding_days=20,
+            initial_capital=100_000.0,
+            execution_mode="long_cheaper_leg_only",
+            max_adv_fraction=0.1,
+            h_lot_size=100,
+        ),
+        cost_config=zero_cost_config(),
+    )
+
+    assert result.summary.trade_count > 0
+    assert result.trades.iloc[0]["h_shares"] <= 100
+
+
+def test_borrow_costs_reduce_paired_pnl() -> None:
+    signal_frame, hedge_ratio = make_ah_signal_frame()
+    strategy_config = StrategyConfig(
+        entry_z_candidates=(0.8,),
+        exit_z=0.25,
+        stop_z=2.5,
+        z_window=20,
+        z_min_periods=20,
+        max_holding_days=20,
+        initial_capital=100_000.0,
+        execution_mode="paired",
+    )
+    no_borrow = zero_cost_config()
+    with_borrow = CostConfig(
+        a_buy_cost_bps=0.0,
+        a_sell_cost_bps=0.0,
+        h_buy_cost_bps=0.0,
+        h_sell_cost_bps=0.0,
+        h_stamp_duty_bps=0.0,
+        fx_conversion_bps=0.0,
+        a_slippage_bps=0.0,
+        h_slippage_bps=0.0,
+        a_impact_bps_per_100pct_adv=0.0,
+        h_impact_bps_per_100pct_adv=0.0,
+        a_short_borrow_apr_bps=500.0,
+        h_short_borrow_apr_bps=500.0,
+        a_long_financing_apr_bps=0.0,
+        h_long_financing_apr_bps=0.0,
+    )
+
+    baseline = backtest_relative_value_strategy(
+        signal_frame=signal_frame,
+        a_symbol="600036",
+        h_symbol="03968",
+        hedge_ratio=hedge_ratio,
+        strategy_config=strategy_config,
+        cost_config=no_borrow,
+    )
+    charged = backtest_relative_value_strategy(
+        signal_frame=signal_frame,
+        a_symbol="600036",
+        h_symbol="03968",
+        hedge_ratio=hedge_ratio,
+        strategy_config=strategy_config,
+        cost_config=with_borrow,
+    )
+
+    assert charged.summary.borrow_costs > 0.0
+    assert charged.summary.final_capital < baseline.summary.final_capital

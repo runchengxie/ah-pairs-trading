@@ -241,6 +241,44 @@ def run_rolling_cointegration(
     return pd.DataFrame(rows).set_index("window_end")
 
 
+def run_rolling_ecm(
+    log_prices: pd.DataFrame,
+    dependent_symbol: str,
+    independent_symbol: str,
+    window_size: int,
+    step_size: int,
+    alpha: float = 0.05,
+) -> pd.DataFrame:
+    """Run a rolling ECM diagnostic across the full sample."""
+
+    rows: list[dict[str, Any]] = []
+    total_rows = len(log_prices)
+    for start_index in range(0, total_rows - window_size + 1, step_size):
+        window_frame = log_prices.iloc[start_index : start_index + window_size]
+        coint_result = run_cointegration_analysis(
+            window_frame,
+            dependent_symbol=dependent_symbol,
+            independent_symbol=independent_symbol,
+            alpha=alpha,
+        )
+        ecm_result = fit_error_correction_model(window_frame, coint_result)
+        rows.append(
+            {
+                "window_end": window_frame.index[-1],
+                "error_correction_speed": ecm_result.error_correction_speed,
+                "p_value": ecm_result.error_correction_p_value,
+                "significant_negative": bool(
+                    ecm_result.error_correction_speed < 0.0 and ecm_result.error_correction_p_value < alpha
+                ),
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame(columns=["error_correction_speed", "p_value", "significant_negative"])
+
+    return pd.DataFrame(rows).set_index("window_end")
+
+
 def matrix_ols(
     dependent_series: pd.Series,
     independent_series: pd.Series,

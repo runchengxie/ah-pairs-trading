@@ -54,7 +54,14 @@
 
 - 真实存在负仓位
 - 对账户权限和交易基础设施要求更高
-- 对成本和借券可得性的敏感度更高
+- 对成本、借券可得性和融资拖累更敏感
+
+当前回测会显式计入：
+
+- 基础手续费
+- H 股印花税与 FX conversion
+- base slippage 与基于 ADV 的冲击成本
+- `paired` 下的 short borrow / long financing carry
 
 ### Benchmark 行为
 

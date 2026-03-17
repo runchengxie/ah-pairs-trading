@@ -54,6 +54,8 @@
 
 - `--execution-mode`
   `long_cheaper_leg_only` 或 `paired`；默认 `long_cheaper_leg_only`
+- `--execution-timing`
+  `close` 或 `next_open`；默认 `next_open`，即使用上一根 bar 的信号在下一根 bar 的开盘成交
 - `--z-window`
   z-score 滚动窗口，默认 `120`
 - `--z-min-periods`
@@ -66,6 +68,14 @@
   只在 `entry_signal_mode=zscore` 下生效；支持 `off`、`ema`、`sma`
 - `--cointegration-gate-mode`
   滚动协整 gate；支持 `off`、`significant`。`significant` 只在最新滚动窗口协整仍显著时允许交易，并在失效时强平
+- `--ecm-gate-mode`
+  滚动 ECM gate；支持 `off`、`significant_negative`。后者要求最新窗口 error-correction speed 为负且显著
+- `--half-life-anchor-mode`
+  支持 `off`、`training`；用于把 z-window / max holding days 锚定到训练期半衰期
+- `--half-life-z-window-multiplier`
+  若设置，则 `z_window = round(training_half_life * multiplier)`
+- `--half-life-max-holding-multiplier`
+  若设置，则 `max_holding_days = round(training_half_life * multiplier)`
 - `--return-filter-window`
   return-spread 平滑窗口，默认 `10`
 - `--return-filter-min-periods`
@@ -80,6 +90,12 @@
   最大持有期，默认 `15`
 - `--position-size-fraction`
   每次开仓可用资本比例，默认 `0.95`
+- `--adv-window`
+  trailing ADV 估计窗口，默认 `20`
+- `--adv-min-periods`
+  ADV 生效所需最小样本数；默认跟随 `adv_window`
+- `--max-adv-fraction`
+  单腿最大容量占 trailing ADV 的比例，默认 `0.05`；传负值可关闭
 - `--initial-capital`
   回测初始资金，默认 `100000`
 - `--objective`
@@ -118,6 +134,22 @@
   H 股印花税假设，默认 `10.0`
 - `--fx-conversion-bps`
   H 股交易相关的 FX 换汇成本，默认 `2.0`
+- `--a-slippage-bps`
+  A 股单边基础滑点，默认 `3.0`
+- `--h-slippage-bps`
+  H 股单边基础滑点，默认 `6.0`
+- `--a-impact-bps-per-100pct-adv`
+  当订单达到 100% trailing ADV 时额外增加的 A 股冲击成本，默认 `15.0`
+- `--h-impact-bps-per-100pct-adv`
+  当订单达到 100% trailing ADV 时额外增加的 H 股冲击成本，默认 `25.0`
+- `--a-short-borrow-apr-bps`
+  `paired` 下 A 股空头借券年化成本，默认 `250.0`
+- `--h-short-borrow-apr-bps`
+  `paired` 下 H 股空头借券年化成本，默认 `150.0`
+- `--a-long-financing-apr-bps`
+  持仓期间 A 股多头融资拖累年化成本，默认 `0.0`
+- `--h-long-financing-apr-bps`
+  持仓期间 H 股多头融资拖累年化成本，默认 `0.0`
 
 ## 缓存与输出
 

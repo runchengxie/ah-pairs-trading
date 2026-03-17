@@ -16,6 +16,9 @@ ReturnFilterMode = Literal["off", "ema", "sma"]
 EntrySignalMode = Literal["zscore", "ret_spread_ema", "ret_spread_sma"]
 HedgeRatioMode = Literal["training", "rolling"]
 CointegrationGateMode = Literal["off", "significant"]
+ExecutionTiming = Literal["close", "next_open"]
+ECMGateMode = Literal["off", "significant_negative"]
+HalfLifeAnchorMode = Literal["off", "training"]
 
 DEFAULT_CACHE_DIR = Path("artifacts/cache/ah_pairs_trading")
 DEFAULT_RUNS_DIR = Path("artifacts/runs")
@@ -66,12 +69,20 @@ class StrategyConfig:
     initial_capital: float = 100_000.0
     objective: str = "sharpe_ratio"
     execution_mode: ExecutionMode = "long_cheaper_leg_only"
+    execution_timing: ExecutionTiming = "next_open"
     entry_signal_mode: EntrySignalMode = "zscore"
     hedge_ratio_mode: HedgeRatioMode = "training"
     return_filter_mode: ReturnFilterMode = "off"
     cointegration_gate_mode: CointegrationGateMode = "off"
+    ecm_gate_mode: ECMGateMode = "off"
+    half_life_anchor_mode: HalfLifeAnchorMode = "off"
+    half_life_z_window_multiplier: float | None = None
+    half_life_max_holding_multiplier: float | None = None
     return_filter_window: int = 10
     return_filter_min_periods: int | None = None
+    adv_window: int = 20
+    adv_min_periods: int | None = None
+    max_adv_fraction: float | None = 0.05
     a_lot_size: int = 100
     h_lot_size: int = 100
 
@@ -86,6 +97,14 @@ class CostConfig:
     h_sell_cost_bps: float = 8.0
     h_stamp_duty_bps: float = 10.0
     fx_conversion_bps: float = 2.0
+    a_slippage_bps: float = 3.0
+    h_slippage_bps: float = 6.0
+    a_impact_bps_per_100pct_adv: float = 15.0
+    h_impact_bps_per_100pct_adv: float = 25.0
+    a_short_borrow_apr_bps: float = 250.0
+    h_short_borrow_apr_bps: float = 150.0
+    a_long_financing_apr_bps: float = 0.0
+    h_long_financing_apr_bps: float = 0.0
 
 
 @dataclass(slots=True, frozen=True)

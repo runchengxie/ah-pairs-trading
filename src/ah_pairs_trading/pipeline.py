@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -24,6 +24,7 @@ from .analysis import (
     fit_var_diagnostics,
     matrix_ols,
     run_cointegration_analysis,
+    run_rolling_ecm,
     run_rolling_cointegration,
     run_segment_analysis,
 )
@@ -65,12 +66,15 @@ class PipelineResult:
     training_cointegration: CointegrationResult
     ecm: ECMResult
     mean_reversion: MeanReversionResult
+    training_mean_reversion: MeanReversionResult
     segment_analysis: pd.DataFrame
     rolling_cointegration: pd.DataFrame
+    rolling_ecm: pd.DataFrame
     matrix_ols: MatrixOLSResult
     var_diagnostics: VARDiagnostics
     train_grid_search: pd.DataFrame
     best_entry_z: float
+    effective_strategy: StrategyConfig
     train_backtest: BacktestResult
     test_backtest: BacktestResult
     benchmark_comparison: pd.DataFrame
@@ -78,7 +82,7 @@ class PipelineResult:
     rolling_beta: pd.Series
 
 
-_PIPELINE_CACHE_VERSION = 3
+_PIPELINE_CACHE_VERSION = 4
 
 
 def _cointegration_to_dict(result: CointegrationResult) -> dict[str, Any]:
@@ -161,7 +165,8 @@ def _resolve_signal_inputs(
     signal_index: pd.Index,
     training_cointegration: CointegrationResult,
     rolling_cointegration: pd.DataFrame,
-) -> tuple[float | pd.Series, float | pd.Series, pd.Series | None, pd.Series | None]:
+    rolling_ecm: pd.DataFrame,
+) -> tuple[float | pd.Series, float | pd.Series, pd.Series | None, pd.Series | None, pd.Series | None, pd.Series | None, pd.Series | None]:
     if config.strategy.hedge_ratio_mode == "rolling":
         if rolling_cointegration.empty:
             intercept_input: float | pd.Series = pd.Series(float("nan"), index=signal_index, dtype=float, name="intercept")
@@ -209,7 +214,62 @@ def _resolve_signal_inputs(
                 name="cointegration_significant",
             )
 
-    return intercept_input, hedge_ratio_input, cointegration_p_value, cointegration_significant
+    ecm_speed: pd.Series | None = None
+    ecm_p_value: pd.Series | None = None
+    ecm_gate_pass: pd.Series | None = None
+    if config.strategy.ecm_gate_mode == "significant_negative":
+        if rolling_ecm.empty:
+            ecm_speed = pd.Series(float("nan"), index=signal_index, dtype=float, name="ecm_speed")
+            ecm_p_value = pd.Series(float("nan"), index=signal_index, dtype=float, name="ecm_p_value")
+            ecm_gate_pass = pd.Series(pd.NA, index=signal_index, dtype="boolean", name="ecm_gate_pass")
+        else:
+            ecm_speed = _align_rolling_float_series(
+                signal_index,
+                rolling_ecm["error_correction_speed"],
+                name="ecm_speed",
+            )
+            ecm_p_value = _align_rolling_float_series(
+                signal_index,
+                rolling_ecm["p_value"],
+                name="ecm_p_value",
+            )
+            ecm_gate_pass = _align_rolling_boolean_series(
+                signal_index,
+                rolling_ecm["significant_negative"],
+                name="ecm_gate_pass",
+            )
+
+    return (
+        intercept_input,
+        hedge_ratio_input,
+        cointegration_p_value,
+        cointegration_significant,
+        ecm_speed,
+        ecm_p_value,
+        ecm_gate_pass,
+    )
+
+
+def _resolve_effective_strategy(strategy_config: StrategyConfig, training_half_life: float | None) -> StrategyConfig:
+    """Optionally anchor holding-period parameters to the training-sample half-life."""
+
+    if strategy_config.half_life_anchor_mode == "off" or training_half_life is None or not math.isfinite(training_half_life):
+        return strategy_config
+
+    z_window = strategy_config.z_window
+    if strategy_config.half_life_z_window_multiplier is not None:
+        z_window = max(2, int(round(training_half_life * strategy_config.half_life_z_window_multiplier)))
+
+    max_holding_days = strategy_config.max_holding_days
+    if strategy_config.half_life_max_holding_multiplier is not None:
+        max_holding_days = max(1, int(round(training_half_life * strategy_config.half_life_max_holding_multiplier)))
+
+    return replace(
+        strategy_config,
+        z_window=z_window,
+        z_min_periods=min(strategy_config.z_min_periods, z_window),
+        max_holding_days=max_holding_days,
+    )
 
 
 def _validate_pair_configuration(config: PipelineConfig) -> dict[str, str | None]:
@@ -325,6 +385,7 @@ def build_pipeline_summary(config: PipelineConfig, result: PipelineResult) -> di
             result.benchmark_comparison,
             rolling_beta_series=result.rolling_beta,
         ).as_dict()
+    effective_strategy = result.effective_strategy
 
     return {
         "run_meta": {
@@ -346,25 +407,35 @@ def build_pipeline_summary(config: PipelineConfig, result: PipelineResult) -> di
             "benchmark_source": _benchmark_source(result),
         },
         "strategy_params": {
-            "entry_z_candidates": list(config.strategy.entry_z_candidates),
+            "entry_z_candidates": list(effective_strategy.entry_z_candidates),
             "best_entry_z": result.best_entry_z,
-            "exit_z": config.strategy.exit_z,
-            "stop_z": config.strategy.stop_z,
-            "z_window": config.strategy.z_window,
-            "z_min_periods": config.strategy.z_min_periods,
-            "entry_signal_mode": config.strategy.entry_signal_mode,
-            "hedge_ratio_mode": config.strategy.hedge_ratio_mode,
-            "return_filter_mode": config.strategy.return_filter_mode,
-            "cointegration_gate_mode": config.strategy.cointegration_gate_mode,
-            "return_filter_window": config.strategy.return_filter_window,
-            "return_filter_min_periods": config.strategy.return_filter_min_periods,
-            "max_holding_days": config.strategy.max_holding_days,
-            "position_size_fraction": config.strategy.position_size_fraction,
-            "initial_capital": config.strategy.initial_capital,
-            "objective": config.strategy.objective,
-            "execution_mode": config.strategy.execution_mode,
-            "a_lot_size": config.strategy.a_lot_size,
-            "h_lot_size": config.strategy.h_lot_size,
+            "exit_z": effective_strategy.exit_z,
+            "stop_z": effective_strategy.stop_z,
+            "z_window": effective_strategy.z_window,
+            "z_min_periods": effective_strategy.z_min_periods,
+            "configured_z_window": config.strategy.z_window,
+            "entry_signal_mode": effective_strategy.entry_signal_mode,
+            "hedge_ratio_mode": effective_strategy.hedge_ratio_mode,
+            "return_filter_mode": effective_strategy.return_filter_mode,
+            "cointegration_gate_mode": effective_strategy.cointegration_gate_mode,
+            "ecm_gate_mode": effective_strategy.ecm_gate_mode,
+            "return_filter_window": effective_strategy.return_filter_window,
+            "return_filter_min_periods": effective_strategy.return_filter_min_periods,
+            "adv_window": effective_strategy.adv_window,
+            "adv_min_periods": effective_strategy.adv_min_periods,
+            "max_adv_fraction": effective_strategy.max_adv_fraction,
+            "max_holding_days": effective_strategy.max_holding_days,
+            "configured_max_holding_days": config.strategy.max_holding_days,
+            "position_size_fraction": effective_strategy.position_size_fraction,
+            "initial_capital": effective_strategy.initial_capital,
+            "objective": effective_strategy.objective,
+            "execution_mode": effective_strategy.execution_mode,
+            "execution_timing": effective_strategy.execution_timing,
+            "half_life_anchor_mode": effective_strategy.half_life_anchor_mode,
+            "half_life_z_window_multiplier": effective_strategy.half_life_z_window_multiplier,
+            "half_life_max_holding_multiplier": effective_strategy.half_life_max_holding_multiplier,
+            "a_lot_size": effective_strategy.a_lot_size,
+            "h_lot_size": effective_strategy.h_lot_size,
             "benchmark_mode": config.benchmark_mode,
             "internal_benchmark_weighting": config.internal_benchmark_weighting,
             "same_issuer_check": config.same_issuer_check,
@@ -376,6 +447,14 @@ def build_pipeline_summary(config: PipelineConfig, result: PipelineResult) -> di
             "h_sell_cost_bps": config.costs.h_sell_cost_bps,
             "h_stamp_duty_bps": config.costs.h_stamp_duty_bps,
             "fx_conversion_bps": config.costs.fx_conversion_bps,
+            "a_slippage_bps": config.costs.a_slippage_bps,
+            "h_slippage_bps": config.costs.h_slippage_bps,
+            "a_impact_bps_per_100pct_adv": config.costs.a_impact_bps_per_100pct_adv,
+            "h_impact_bps_per_100pct_adv": config.costs.h_impact_bps_per_100pct_adv,
+            "a_short_borrow_apr_bps": config.costs.a_short_borrow_apr_bps,
+            "h_short_borrow_apr_bps": config.costs.h_short_borrow_apr_bps,
+            "a_long_financing_apr_bps": config.costs.a_long_financing_apr_bps,
+            "h_long_financing_apr_bps": config.costs.h_long_financing_apr_bps,
         },
         "train_metrics": result.train_backtest.summary.as_dict(),
         "test_metrics": result.test_backtest.summary.as_dict(),
@@ -385,6 +464,9 @@ def build_pipeline_summary(config: PipelineConfig, result: PipelineResult) -> di
             "beta_window": config.rolling.beta_window,
             "test_rolling_sharpe": _rolling_series_summary(result.rolling_sharpe),
             "test_rolling_beta": _rolling_series_summary(result.rolling_beta),
+            "rolling_ecm_speed": _rolling_series_summary(
+                result.rolling_ecm["error_correction_speed"] if not result.rolling_ecm.empty else pd.Series(dtype=float)
+            ),
         },
         "diagnostics": {
             "full_sample_cointegration": _cointegration_to_dict(result.full_sample_cointegration),
@@ -395,6 +477,7 @@ def build_pipeline_summary(config: PipelineConfig, result: PipelineResult) -> di
                 "coefficients": {key: float(value) for key, value in result.ecm.coefficients.items()},
             },
             "mean_reversion": _mean_reversion_to_dict(result.mean_reversion),
+            "training_mean_reversion": _mean_reversion_to_dict(result.training_mean_reversion),
             "matrix_ols": _matrix_ols_to_dict(result.matrix_ols),
             "var_diagnostics": _var_diagnostics_to_dict(result.var_diagnostics),
         },
@@ -458,6 +541,10 @@ def _render_backtest_section(title: str, metrics: dict[str, Any]) -> list[str]:
         f"- Gross PnL: {_format_float(metrics.get('gross_pnl'))}",
         f"- Net PnL: {_format_float(metrics.get('net_pnl'))}",
         f"- Total costs: {_format_float(metrics.get('total_costs'))}",
+        f"- Transaction costs: {_format_float(metrics.get('transaction_costs'))}",
+        f"- Slippage costs: {_format_float(metrics.get('slippage_costs'))}",
+        f"- Borrow costs: {_format_float(metrics.get('borrow_costs'))}",
+        f"- Financing costs: {_format_float(metrics.get('financing_costs'))}",
         f"- Cost / |gross PnL|: {_format_percent(metrics.get('cost_to_gross_pnl'))}",
         f"- Time in market: {_format_percent(metrics.get('time_in_market'))}",
         f"- Max consecutive losses: {int(metrics.get('max_consecutive_losses', 0))}",
@@ -493,7 +580,7 @@ def render_pipeline_scorecard(summary: dict[str, Any]) -> str:
     benchmark_metrics = summary.get("benchmark_metrics")
     rolling_metrics = summary["rolling_metrics"]
     training_cointegration = diagnostics["training_cointegration"]
-    mean_reversion = diagnostics["mean_reversion"]
+    mean_reversion = diagnostics["training_mean_reversion"]
     pair_validation = instrument_meta["pair_validation"]
 
     lines = [
@@ -508,12 +595,17 @@ def render_pipeline_scorecard(summary: dict[str, Any]) -> str:
         f"- Window: {run_meta['start_date']} to {run_meta['end_date']}",
         f"- Train/Test split: train <= {run_meta['train_end_date']}, test > {run_meta['train_end_date']}",
         f"- Execution mode: {strategy_params['execution_mode']}",
+        f"- Execution timing: {strategy_params['execution_timing']}",
         f"- Best entry z-score: {_format_float(strategy_params['best_entry_z'], digits=2)}",
         f"- Entry z candidates: {', '.join(str(value) for value in strategy_params['entry_z_candidates'])}",
         f"- Entry signal: {_entry_signal_label(strategy_params)}",
         f"- Hedge ratio mode: {strategy_params['hedge_ratio_mode']}",
         f"- Return filter: {_return_filter_label(strategy_params)}",
         f"- Cointegration gate: {strategy_params['cointegration_gate_mode']}",
+        f"- ECM gate: {strategy_params['ecm_gate_mode']}",
+        f"- ADV cap: {_format_percent(strategy_params['max_adv_fraction']) if strategy_params['max_adv_fraction'] is not None else 'off'}",
+        f"- Effective z-window: {strategy_params['z_window']} (configured {strategy_params['configured_z_window']})",
+        f"- Effective max holding: {strategy_params['max_holding_days']} days (configured {strategy_params['configured_max_holding_days']})",
         f"- Benchmark mode: {strategy_params['benchmark_mode']}",
         f"- Benchmark: {instrument_meta['benchmark_label'] or 'not provided'}",
         f"- Benchmark source: {instrument_meta['benchmark_source'] or 'not provided'}",
@@ -571,26 +663,7 @@ def render_pipeline_scorecard(summary: dict[str, Any]) -> str:
 
 
 def _strategy_with_entry_z(strategy_config: StrategyConfig, entry_z: float) -> StrategyConfig:
-    return StrategyConfig(
-        entry_z_candidates=(entry_z,),
-        exit_z=strategy_config.exit_z,
-        stop_z=strategy_config.stop_z,
-        z_window=strategy_config.z_window,
-        z_min_periods=strategy_config.z_min_periods,
-        max_holding_days=strategy_config.max_holding_days,
-        position_size_fraction=strategy_config.position_size_fraction,
-        initial_capital=strategy_config.initial_capital,
-        objective=strategy_config.objective,
-        execution_mode=strategy_config.execution_mode,
-        entry_signal_mode=strategy_config.entry_signal_mode,
-        hedge_ratio_mode=strategy_config.hedge_ratio_mode,
-        return_filter_mode=strategy_config.return_filter_mode,
-        cointegration_gate_mode=strategy_config.cointegration_gate_mode,
-        return_filter_window=strategy_config.return_filter_window,
-        return_filter_min_periods=strategy_config.return_filter_min_periods,
-        a_lot_size=strategy_config.a_lot_size,
-        h_lot_size=strategy_config.h_lot_size,
-    )
+    return replace(strategy_config, entry_z_candidates=(entry_z,))
 
 
 def _save_dataframe(frame: pd.DataFrame | pd.Series, output_path: Path) -> None:
@@ -619,6 +692,7 @@ def _save_outputs(config: PipelineConfig, result: PipelineResult) -> None:
     _save_dataframe(result.signal_frame, output_dir / "signal_frame.csv")
     _save_dataframe(result.segment_analysis, output_dir / "segment_analysis.csv")
     _save_dataframe(result.rolling_cointegration, output_dir / "rolling_cointegration.csv")
+    _save_dataframe(result.rolling_ecm, output_dir / "rolling_ecm.csv")
     _save_dataframe(result.train_grid_search, output_dir / "train_grid_search.csv")
     _save_dataframe(result.train_backtest.equity_curve, output_dir / "train_equity_curve.csv")
     _save_dataframe(result.train_backtest.trades, output_dir / "train_trades.csv")
@@ -779,6 +853,15 @@ def run_ah_relative_value_pipeline(
         },
         lambda: estimate_mean_reversion(full_sample_cointegration.residuals),
     )
+    training_mean_reversion = stage_cache.load_or_compute(
+        "training_mean_reversion",
+        {
+            "version": _PIPELINE_CACHE_VERSION,
+            "residuals_digest": frame_digest(training_cointegration.residuals),
+        },
+        lambda: estimate_mean_reversion(training_cointegration.residuals),
+    )
+    effective_strategy = _resolve_effective_strategy(config.strategy, training_mean_reversion.half_life)
     segment_analysis = stage_cache.load_or_compute(
         "segment_analysis",
         {
@@ -817,12 +900,41 @@ def run_ah_relative_value_pipeline(
             alpha=config.alpha,
         ),
     )
-    signal_intercept, signal_hedge_ratio, signal_cointegration_p_value, signal_cointegration_significant = (
+    rolling_ecm = stage_cache.load_or_compute(
+        "rolling_ecm",
+        {
+            "version": _PIPELINE_CACHE_VERSION,
+            "log_prices_digest": log_prices_digest,
+            "dependent_symbol": config.a_symbol,
+            "independent_symbol": config.h_symbol,
+            "window_size": config.rolling.cointegration_window,
+            "step_size": config.rolling.cointegration_step,
+            "alpha": config.alpha,
+        },
+        lambda: run_rolling_ecm(
+            log_prices,
+            dependent_symbol=config.a_symbol,
+            independent_symbol=config.h_symbol,
+            window_size=config.rolling.cointegration_window,
+            step_size=config.rolling.cointegration_step,
+            alpha=config.alpha,
+        ),
+    )
+    (
+        signal_intercept,
+        signal_hedge_ratio,
+        signal_cointegration_p_value,
+        signal_cointegration_significant,
+        signal_ecm_speed,
+        signal_ecm_p_value,
+        signal_ecm_gate_pass,
+    ) = (
         _resolve_signal_inputs(
             config,
             signal_index=prices.index,
             training_cointegration=training_cointegration,
             rolling_cointegration=rolling_cointegration,
+            rolling_ecm=rolling_ecm,
         )
     )
     manual_ols = stage_cache.load_or_compute(
@@ -858,20 +970,24 @@ def run_ah_relative_value_pipeline(
             "h_symbol": config.h_symbol,
             "training_intercept": training_cointegration.intercept,
             "training_hedge_ratio": training_cointegration.hedge_ratio,
-            "hedge_ratio_mode": config.strategy.hedge_ratio_mode,
-            "cointegration_gate_mode": config.strategy.cointegration_gate_mode,
+            "effective_strategy": effective_strategy,
             "rolling_cointegration_digest": (
                 frame_digest(rolling_cointegration)
                 if (
-                    config.strategy.hedge_ratio_mode == "rolling"
-                    or config.strategy.cointegration_gate_mode == "significant"
+                    effective_strategy.hedge_ratio_mode == "rolling"
+                    or effective_strategy.cointegration_gate_mode == "significant"
                 )
                 else None
             ),
-            "z_window": config.strategy.z_window,
-            "z_min_periods": config.strategy.z_min_periods,
-            "return_filter_window": config.strategy.return_filter_window,
-            "return_filter_min_periods": config.strategy.return_filter_min_periods,
+            "rolling_ecm_digest": (
+                frame_digest(rolling_ecm) if effective_strategy.ecm_gate_mode == "significant_negative" else None
+            ),
+            "z_window": effective_strategy.z_window,
+            "z_min_periods": effective_strategy.z_min_periods,
+            "return_filter_window": effective_strategy.return_filter_window,
+            "return_filter_min_periods": effective_strategy.return_filter_min_periods,
+            "adv_window": effective_strategy.adv_window,
+            "adv_min_periods": effective_strategy.adv_min_periods,
         },
         lambda: prepare_signal_frame(
             prices,
@@ -879,12 +995,17 @@ def run_ah_relative_value_pipeline(
             h_symbol=config.h_symbol,
             intercept=signal_intercept,
             hedge_ratio=signal_hedge_ratio,
-            z_window=config.strategy.z_window,
-            min_periods=config.strategy.z_min_periods,
-            return_filter_window=config.strategy.return_filter_window,
-            return_filter_min_periods=config.strategy.return_filter_min_periods,
+            z_window=effective_strategy.z_window,
+            min_periods=effective_strategy.z_min_periods,
+            return_filter_window=effective_strategy.return_filter_window,
+            return_filter_min_periods=effective_strategy.return_filter_min_periods,
+            adv_window=effective_strategy.adv_window,
+            adv_min_periods=effective_strategy.adv_min_periods,
             cointegration_p_value=signal_cointegration_p_value,
             cointegration_significant=signal_cointegration_significant,
+            ecm_speed=signal_ecm_speed,
+            ecm_p_value=signal_ecm_p_value,
+            ecm_gate_pass=signal_ecm_gate_pass,
         ),
     )
     train_signal_frame, test_signal_frame = split_train_test(signal_frame, config.train_end_date)
@@ -899,7 +1020,7 @@ def run_ah_relative_value_pipeline(
             "a_symbol": config.a_symbol,
             "h_symbol": config.h_symbol,
             "hedge_ratio": training_cointegration.hedge_ratio,
-            "strategy_config": config.strategy,
+            "strategy_config": effective_strategy,
             "cost_config": config.costs,
         },
         lambda: grid_search_entry_z(
@@ -907,11 +1028,11 @@ def run_ah_relative_value_pipeline(
             a_symbol=config.a_symbol,
             h_symbol=config.h_symbol,
             hedge_ratio=training_cointegration.hedge_ratio,
-            strategy_config=config.strategy,
+            strategy_config=effective_strategy,
             cost_config=config.costs,
         ),
     )
-    selected_strategy = _strategy_with_entry_z(config.strategy, best_entry_z)
+    selected_strategy = _strategy_with_entry_z(effective_strategy, best_entry_z)
 
     train_backtest = stage_cache.load_or_compute(
         "train_backtest",
@@ -1021,12 +1142,15 @@ def run_ah_relative_value_pipeline(
         training_cointegration=training_cointegration,
         ecm=ecm,
         mean_reversion=mean_reversion,
+        training_mean_reversion=training_mean_reversion,
         segment_analysis=segment_analysis,
         rolling_cointegration=rolling_cointegration,
+        rolling_ecm=rolling_ecm,
         matrix_ols=manual_ols,
         var_diagnostics=var_diagnostics,
         train_grid_search=train_grid_search,
         best_entry_z=best_entry_z,
+        effective_strategy=effective_strategy,
         train_backtest=train_backtest,
         test_backtest=test_backtest,
         benchmark_comparison=benchmark_comparison,

@@ -17,6 +17,7 @@ def test_cli_parser_uses_artifacts_cache_dir_by_default() -> None:
 
     assert args.cache_dir == Path("artifacts/cache/ah_pairs_trading")
     assert args.output_dir is None
+    assert args.execution_timing == "next_open"
 
 
 def test_cli_prints_rendered_scorecard(monkeypatch, capsys) -> None:
@@ -82,6 +83,7 @@ def test_cli_passes_same_issuer_and_benchmark_flags(monkeypatch) -> None:
     assert config.strategy.hedge_ratio_mode == "rolling"
     assert config.strategy.return_filter_mode == "ema"
     assert config.strategy.cointegration_gate_mode == "significant"
+    assert config.strategy.execution_timing == "next_open"
     assert config.strategy.return_filter_window == 7
     assert config.strategy.return_filter_min_periods == 5
 
@@ -133,6 +135,9 @@ def test_cli_loads_research_preset_via_config_flag(monkeypatch) -> None:
     assert config.data.fx_csv_path == Path("data/fx/hkdcny_2018_2024.csv").resolve()
     assert config.strategy.hedge_ratio_mode == "rolling"
     assert config.strategy.cointegration_gate_mode == "significant"
+    assert config.strategy.ecm_gate_mode == "significant_negative"
+    assert config.strategy.half_life_anchor_mode == "training"
+    assert config.strategy.execution_timing == "next_open"
     assert config.same_issuer_check == "strict"
     assert config.output_dir == Path("artifacts/runs/petrochina_ah_research").resolve()
 

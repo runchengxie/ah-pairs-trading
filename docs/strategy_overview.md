@@ -77,9 +77,25 @@ spread = log(A) - intercept - hedge_ratio * log(H)
 - 超过 `max_holding_days` 时强平
 - 到样本最后一天时做 end-of-sample 平仓
 
+执行假设：
+
+- 默认 `execution_timing=next_open`
+- 用 `t-1` 的收盘信号在 `t` 的开盘执行，而不是同一根 bar 又出信号又成交
+- 如果原始历史里有 `volume`，会进一步计算 trailing ADV，用于容量上限和冲击成本
+- 如果缺少 `open`，会退化为使用 close 作为执行价
+
 如果主信号仍然是 `zscore`，还可以额外打开 `return_filter_mode`，要求 `ret_spread` 的 `EMA/SMA` 方向先与均值回归方向一致，再允许入场。
 
 如果打开 `--cointegration-gate-mode significant`，策略只会在最新滚动窗口协整仍显著时入场；持仓中若 gate 失效，也会触发强平。
+
+如果打开 `--ecm-gate-mode significant_negative`，策略还会要求最新滚动 ECM 的 error-correction speed 为负且显著，否则拒绝开仓并在持仓中触发强平。
+
+如果打开 `--half-life-anchor-mode training`，训练期 residual half-life 可以进一步重写：
+
+- `z_window`
+- `max_holding_days`
+
+从而让执行参数不再完全依赖固定经验值。
 
 默认参数见 [`cli_reference.md`](cli_reference.md)。
 
@@ -129,12 +145,14 @@ spread = log(A) - intercept - hedge_ratio * log(H)
 - 矩阵 OLS
 - VAR 稳定性诊断
 
-这些内容里，ECM、半衰期、矩阵 OLS、VAR 仍主要用于诊断；滚动协整现在既可作为研究输出，也可以在执行层里驱动：
+这些内容里，矩阵 OLS、VAR 仍主要用于诊断；滚动协整、rolling ECM 和 half-life 现在都可以部分进入执行层：
 
 - 训练期协整估计
 - 固定或滚动的 spread / hedge ratio
 - 全样本滚动 z-score
 - 可选 rolling cointegration gate
+- 可选 rolling ECM gate
+- 训练期 half-life 驱动的 z-window / max holding
 - 训练集阈值搜索
 - `long_cheaper_leg_only` 或 `paired` 回测
 
@@ -144,7 +162,7 @@ spread = log(A) - intercept - hedge_ratio * log(H)
 
 - A/H 同发行人相对价值研究
 - 不能做空的账户做信号筛选
-- 需要明确计入成本、lot size 和 FX 的回测
+- 需要明确计入成本、lot size、FX、slippage、borrow cost 和容量约束的回测
 
 不适合：
 

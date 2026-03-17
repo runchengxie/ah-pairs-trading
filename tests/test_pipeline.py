@@ -15,6 +15,25 @@ from ah_pairs_trading.pipeline import build_pipeline_summary, render_pipeline_sc
 pytestmark = pytest.mark.integration
 
 
+def zero_cost_config() -> CostConfig:
+    return CostConfig(
+        a_buy_cost_bps=0.0,
+        a_sell_cost_bps=0.0,
+        h_buy_cost_bps=0.0,
+        h_sell_cost_bps=0.0,
+        h_stamp_duty_bps=0.0,
+        fx_conversion_bps=0.0,
+        a_slippage_bps=0.0,
+        h_slippage_bps=0.0,
+        a_impact_bps_per_100pct_adv=0.0,
+        h_impact_bps_per_100pct_adv=0.0,
+        a_short_borrow_apr_bps=0.0,
+        h_short_borrow_apr_bps=0.0,
+        a_long_financing_apr_bps=0.0,
+        h_long_financing_apr_bps=0.0,
+    )
+
+
 def make_raw_ah_frames(length: int = 260) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Create synthetic A/H/FX histories that mimic a cointegrated pair."""
 
@@ -28,8 +47,22 @@ def make_raw_ah_frames(length: int = 260) -> tuple[pd.DataFrame, pd.DataFrame, p
     hedge_ratio = 1.06
     log_a = intercept + hedge_ratio * log_h_cny + residual
 
-    a_frame = pd.DataFrame({"date": index, "close": np.exp(log_a)})
-    h_frame = pd.DataFrame({"date": index, "close": np.exp(log_h_cny) / fx_rate})
+    a_frame = pd.DataFrame(
+        {
+            "date": index,
+            "open": np.exp(log_a) * 1.001,
+            "close": np.exp(log_a),
+            "volume": np.full(length, 4_000_000.0),
+        }
+    )
+    h_frame = pd.DataFrame(
+        {
+            "date": index,
+            "open": np.exp(log_h_cny) / fx_rate * 0.999,
+            "close": np.exp(log_h_cny) / fx_rate,
+            "volume": np.full(length, 3_500_000.0),
+        }
+    )
     fx_frame = pd.DataFrame({"date": index, "close": fx_rate})
     return a_frame, h_frame, fx_frame
 
@@ -59,14 +92,7 @@ def test_pipeline_runs_on_supplied_ah_frames() -> None:
             a_lot_size=100,
             h_lot_size=100,
         ),
-        costs=CostConfig(
-            a_buy_cost_bps=0.0,
-            a_sell_cost_bps=0.0,
-            h_buy_cost_bps=0.0,
-            h_sell_cost_bps=0.0,
-            h_stamp_duty_bps=0.0,
-            fx_conversion_bps=0.0,
-        ),
+        costs=zero_cost_config(),
     )
 
     result = run_ah_relative_value_pipeline(
@@ -123,14 +149,7 @@ def test_pipeline_resume_from_cache_reuses_stage_outputs(tmp_path, monkeypatch) 
             a_lot_size=100,
             h_lot_size=100,
         ),
-        costs=CostConfig(
-            a_buy_cost_bps=0.0,
-            a_sell_cost_bps=0.0,
-            h_buy_cost_bps=0.0,
-            h_sell_cost_bps=0.0,
-            h_stamp_duty_bps=0.0,
-            fx_conversion_bps=0.0,
-        ),
+        costs=zero_cost_config(),
         cache_dir=tmp_path / "cache",
         resume_from_cache=True,
     )
@@ -183,14 +202,7 @@ def test_pipeline_summary_schema_and_scorecard_are_persisted(tmp_path) -> None:
             a_lot_size=100,
             h_lot_size=100,
         ),
-        costs=CostConfig(
-            a_buy_cost_bps=0.0,
-            a_sell_cost_bps=0.0,
-            h_buy_cost_bps=0.0,
-            h_sell_cost_bps=0.0,
-            h_stamp_duty_bps=0.0,
-            fx_conversion_bps=0.0,
-        ),
+        costs=zero_cost_config(),
         output_dir=output_dir,
     )
 
@@ -275,14 +287,7 @@ def test_pipeline_cointegration_error_surfaces_context(monkeypatch) -> None:
             a_lot_size=100,
             h_lot_size=100,
         ),
-        costs=CostConfig(
-            a_buy_cost_bps=0.0,
-            a_sell_cost_bps=0.0,
-            h_buy_cost_bps=0.0,
-            h_sell_cost_bps=0.0,
-            h_stamp_duty_bps=0.0,
-            fx_conversion_bps=0.0,
-        ),
+        costs=zero_cost_config(),
         cache_dir=None,
     )
 
@@ -328,14 +333,7 @@ def test_pipeline_rejects_known_cross_issuer_pair_before_backtest() -> None:
             a_lot_size=100,
             h_lot_size=100,
         ),
-        costs=CostConfig(
-            a_buy_cost_bps=0.0,
-            a_sell_cost_bps=0.0,
-            h_buy_cost_bps=0.0,
-            h_sell_cost_bps=0.0,
-            h_stamp_duty_bps=0.0,
-            fx_conversion_bps=0.0,
-        ),
+        costs=zero_cost_config(),
     )
 
     with pytest.raises(ValueError) as exc_info:
@@ -377,14 +375,7 @@ def test_paired_mode_without_explicit_benchmark_does_not_auto_generate_internal_
             a_lot_size=100,
             h_lot_size=100,
         ),
-        costs=CostConfig(
-            a_buy_cost_bps=0.0,
-            a_sell_cost_bps=0.0,
-            h_buy_cost_bps=0.0,
-            h_sell_cost_bps=0.0,
-            h_stamp_duty_bps=0.0,
-            fx_conversion_bps=0.0,
-        ),
+        costs=zero_cost_config(),
     )
 
     result = run_ah_relative_value_pipeline(
@@ -430,14 +421,7 @@ def test_pipeline_supports_return_spread_entry_signal_mode() -> None:
             a_lot_size=100,
             h_lot_size=100,
         ),
-        costs=CostConfig(
-            a_buy_cost_bps=0.0,
-            a_sell_cost_bps=0.0,
-            h_buy_cost_bps=0.0,
-            h_sell_cost_bps=0.0,
-            h_stamp_duty_bps=0.0,
-            fx_conversion_bps=0.0,
-        ),
+        costs=zero_cost_config(),
     )
 
     result = run_ah_relative_value_pipeline(
@@ -454,8 +438,8 @@ def test_pipeline_supports_return_spread_entry_signal_mode() -> None:
     assert summary_payload["strategy_params"]["entry_signal_mode"] == "ret_spread_ema"
 
 
-def test_pipeline_supports_dynamic_hedge_ratio_and_cointegration_gate() -> None:
-    """The pipeline should expose rolling coefficients and gating diagnostics to execution."""
+def test_pipeline_supports_dynamic_hedge_ratio_gates_and_half_life_anchor() -> None:
+    """The pipeline should expose rolling diagnostics and half-life-derived execution parameters."""
 
     a_frame, h_frame, fx_frame = make_raw_ah_frames(length=320)
     config = PipelineConfig(
@@ -478,17 +462,14 @@ def test_pipeline_supports_dynamic_hedge_ratio_and_cointegration_gate() -> None:
             execution_mode="paired",
             hedge_ratio_mode="rolling",
             cointegration_gate_mode="significant",
+            ecm_gate_mode="significant_negative",
+            half_life_anchor_mode="training",
+            half_life_z_window_multiplier=2.0,
+            half_life_max_holding_multiplier=1.5,
             a_lot_size=100,
             h_lot_size=100,
         ),
-        costs=CostConfig(
-            a_buy_cost_bps=0.0,
-            a_sell_cost_bps=0.0,
-            h_buy_cost_bps=0.0,
-            h_sell_cost_bps=0.0,
-            h_stamp_duty_bps=0.0,
-            fx_conversion_bps=0.0,
-        ),
+        costs=zero_cost_config(),
         rolling=RollingConfig(
             cointegration_window=60,
             cointegration_step=5,
@@ -508,8 +489,18 @@ def test_pipeline_supports_dynamic_hedge_ratio_and_cointegration_gate() -> None:
 
     assert "cointegration_gate_pass" in result.signal_frame.columns
     assert "cointegration_p_value" in result.signal_frame.columns
+    assert "ecm_gate_pass" in result.signal_frame.columns
+    assert "ecm_p_value" in result.signal_frame.columns
+    assert "a_open" in result.signal_frame.columns
+    assert "h_open" in result.signal_frame.columns
     assert result.signal_frame["hedge_ratio"].notna().sum() > 0
     assert result.signal_frame["hedge_ratio"].dropna().nunique() > 1
     assert result.signal_frame["cointegration_gate_pass"].dropna().isin([True, False]).all()
+    assert result.signal_frame["ecm_gate_pass"].dropna().isin([True, False]).all()
+    assert not result.rolling_ecm.empty
     assert summary_payload["strategy_params"]["hedge_ratio_mode"] == "rolling"
     assert summary_payload["strategy_params"]["cointegration_gate_mode"] == "significant"
+    assert summary_payload["strategy_params"]["ecm_gate_mode"] == "significant_negative"
+    assert summary_payload["strategy_params"]["execution_timing"] == "next_open"
+    assert summary_payload["strategy_params"]["z_window"] != config.strategy.z_window
+    assert summary_payload["strategy_params"]["max_holding_days"] != config.strategy.max_holding_days

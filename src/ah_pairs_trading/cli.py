@@ -107,6 +107,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Execution mode for the strategy.",
     )
     parser.add_argument(
+        "--execution-timing",
+        default="next_open",
+        choices=("close", "next_open"),
+        help="Execute on the same bar close or on the next bar open using lagged signals.",
+    )
+    parser.add_argument(
         "--entry-signal-mode",
         default="zscore",
         choices=("zscore", "ret_spread_ema", "ret_spread_sma"),
@@ -136,6 +142,36 @@ def build_parser() -> argparse.ArgumentParser:
         default="off",
         choices=("off", "significant"),
         help="Optional rolling cointegration gate. `significant` only allows trades when the latest rolling p-value stays below alpha.",
+    )
+    parser.add_argument(
+        "--ecm-gate-mode",
+        default="off",
+        choices=("off", "significant_negative"),
+        help=(
+            "Optional rolling ECM gate. `significant_negative` only allows trades when the latest error-correction "
+            "speed is negative and statistically significant."
+        ),
+    )
+    parser.add_argument(
+        "--half-life-anchor-mode",
+        default="off",
+        choices=("off", "training"),
+        help="Optionally anchor z-window and/or max holding days to the training-sample residual half-life.",
+    )
+    parser.add_argument(
+        "--half-life-z-window-multiplier",
+        type=float,
+        default=None,
+        help="If set with `--half-life-anchor-mode training`, derive z-window as round(training half-life * multiplier).",
+    )
+    parser.add_argument(
+        "--half-life-max-holding-multiplier",
+        type=float,
+        default=None,
+        help=(
+            "If set with `--half-life-anchor-mode training`, derive max holding days as "
+            "round(training half-life * multiplier)."
+        ),
     )
     parser.add_argument(
         "--return-filter-window",
@@ -168,6 +204,24 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.95,
         help="Fraction of current capital allocated to a new position.",
     )
+    parser.add_argument(
+        "--adv-window",
+        type=int,
+        default=20,
+        help="Trailing window used to estimate average daily volume for capacity and impact controls.",
+    )
+    parser.add_argument(
+        "--adv-min-periods",
+        type=int,
+        default=None,
+        help="Minimum observations required before ADV-based controls are considered valid.",
+    )
+    parser.add_argument(
+        "--max-adv-fraction",
+        type=float,
+        default=0.05,
+        help="Maximum fraction of trailing ADV allowed per trade leg. Set a negative value to disable the cap.",
+    )
     parser.add_argument("--a-lot-size", type=int, default=100, help="Lot size used for the A-share leg.")
     parser.add_argument("--h-lot-size", type=int, default=100, help="Lot size used for the H-share leg.")
     parser.add_argument("--initial-capital", type=float, default=100000.0, help="Initial capital for backtests.")
@@ -198,6 +252,44 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=2.0,
         help="Implicit FX conversion cost applied to H-share trades in bps.",
+    )
+    parser.add_argument("--a-slippage-bps", type=float, default=3.0, help="Base one-way A-share slippage in bps.")
+    parser.add_argument("--h-slippage-bps", type=float, default=6.0, help="Base one-way H-share slippage in bps.")
+    parser.add_argument(
+        "--a-impact-bps-per-100pct-adv",
+        type=float,
+        default=15.0,
+        help="Additional A-share slippage in bps when the order equals 100% of trailing ADV.",
+    )
+    parser.add_argument(
+        "--h-impact-bps-per-100pct-adv",
+        type=float,
+        default=25.0,
+        help="Additional H-share slippage in bps when the order equals 100% of trailing ADV.",
+    )
+    parser.add_argument(
+        "--a-short-borrow-apr-bps",
+        type=float,
+        default=250.0,
+        help="Annualized A-share borrow fee applied to short notional in paired mode, in bps.",
+    )
+    parser.add_argument(
+        "--h-short-borrow-apr-bps",
+        type=float,
+        default=150.0,
+        help="Annualized H-share borrow fee applied to short notional in paired mode, in bps.",
+    )
+    parser.add_argument(
+        "--a-long-financing-apr-bps",
+        type=float,
+        default=0.0,
+        help="Annualized financing drag applied to A-share long notional while positions are open, in bps.",
+    )
+    parser.add_argument(
+        "--h-long-financing-apr-bps",
+        type=float,
+        default=0.0,
+        help="Annualized financing drag applied to H-share long notional while positions are open, in bps.",
     )
     parser.add_argument(
         "--allow-non-coint",
@@ -402,12 +494,20 @@ def main(argv: list[str] | None = None) -> int:
             initial_capital=args.initial_capital,
             objective=args.objective,
             execution_mode=args.execution_mode,
+            execution_timing=args.execution_timing,
             entry_signal_mode=args.entry_signal_mode,
             hedge_ratio_mode=args.hedge_ratio_mode,
             return_filter_mode=args.return_filter_mode,
             cointegration_gate_mode=args.cointegration_gate_mode,
+            ecm_gate_mode=args.ecm_gate_mode,
+            half_life_anchor_mode=args.half_life_anchor_mode,
+            half_life_z_window_multiplier=args.half_life_z_window_multiplier,
+            half_life_max_holding_multiplier=args.half_life_max_holding_multiplier,
             return_filter_window=args.return_filter_window,
             return_filter_min_periods=args.return_filter_min_periods,
+            adv_window=args.adv_window,
+            adv_min_periods=args.adv_min_periods,
+            max_adv_fraction=None if args.max_adv_fraction is not None and args.max_adv_fraction < 0 else args.max_adv_fraction,
             a_lot_size=args.a_lot_size,
             h_lot_size=args.h_lot_size,
         ),
@@ -418,6 +518,14 @@ def main(argv: list[str] | None = None) -> int:
             h_sell_cost_bps=args.h_sell_cost_bps,
             h_stamp_duty_bps=args.h_stamp_duty_bps,
             fx_conversion_bps=args.fx_conversion_bps,
+            a_slippage_bps=args.a_slippage_bps,
+            h_slippage_bps=args.h_slippage_bps,
+            a_impact_bps_per_100pct_adv=args.a_impact_bps_per_100pct_adv,
+            h_impact_bps_per_100pct_adv=args.h_impact_bps_per_100pct_adv,
+            a_short_borrow_apr_bps=args.a_short_borrow_apr_bps,
+            h_short_borrow_apr_bps=args.h_short_borrow_apr_bps,
+            a_long_financing_apr_bps=args.a_long_financing_apr_bps,
+            h_long_financing_apr_bps=args.h_long_financing_apr_bps,
         ),
         rolling=RollingConfig(),
         cache_dir=None if args.no_cache else args.cache_dir,
