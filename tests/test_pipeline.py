@@ -12,6 +12,8 @@ from ah_pairs_trading.analysis import CointegrationResult
 from ah_pairs_trading.config import CostConfig, DataConfig, PipelineConfig, RollingConfig, StrategyConfig
 from ah_pairs_trading.pipeline import build_pipeline_summary, render_pipeline_scorecard, run_ah_relative_value_pipeline
 
+pytestmark = pytest.mark.integration
+
 
 def make_raw_ah_frames(length: int = 260) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Create synthetic A/H/FX histories that mimic a cointegrated pair."""

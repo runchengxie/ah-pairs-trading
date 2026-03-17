@@ -1,5 +1,5 @@
 # Canonical smoke-test preset for PetroChina A/H.
-# Keys intentionally mirror the current CLI flag names for future `--config` support.
+# Keys intentionally mirror the current CLI flag names for `pairs-trading --config`.
 
 a_symbol = "601857"
 h_symbol = "00857"
@@ -8,5 +8,5 @@ end_date = "2024-12-31"
 train_end_date = "2022-12-31"
 constant_fx_rate = 0.92
 allow_non_coint = true
-cache_dir = "artifacts/cache/ah_pairs_trading"
-output_dir = "artifacts/runs/petrochina_ah_smoke"
+cache_dir = "../artifacts/cache/ah_pairs_trading"
+output_dir = "../artifacts/runs/petrochina_ah_smoke"

@@ -5,7 +5,7 @@
 - `data/` 保留给手工维护或外部导入的输入文件，例如 `data/fx/*.csv`
 - `artifacts/cache/ah_pairs_trading/` 保存自动数据缓存和可选 stage cache
 - `artifacts/runs/<run-name>/` 保存每次运行生成的 CSV、图表和摘要
-- `configs/` 保存固定实验参数模板；当前先作为预设清单，后续 CLI 会支持 `--config`
+- `configs/` 保存可直接传给 `--config` 的 TOML 预设；文件里的相对路径会相对 TOML 文件自身解析
 
 ## 数据输入优先级
 

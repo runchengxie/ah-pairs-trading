@@ -109,3 +109,27 @@ python scripts/fetch_fx_history.py \
 - 先安装项目依赖
 - 或改为显式传本地 CSV
 - 如果你怀疑 `artifacts/cache/ah_pairs_trading/` 下的 symbol 主档已经过期或不一致，可以加 `--refresh-cache` 强制重建
+
+## 9. `Config file ... does not exist`
+
+原因：
+
+- 你传了 `--config`
+- 但对应的 TOML 文件路径不存在
+
+处理：
+
+- 先确认路径是否写对
+- 如果你在 TOML 里继续引用相对路径，记住这些路径会相对 TOML 文件自身解析
+
+## 10. `Config file ... contains unsupported keys ...`
+
+原因：
+
+- TOML 里用了 CLI 当前并不支持的键
+- 或把键名写错了
+
+处理：
+
+- 让 TOML 顶层键名与 CLI 参数名对应，例如 `a_symbol`、`fx_csv`、`benchmark_mode`
+- 如果你要临时改某个参数，优先直接写成 `pairs-trading --config your.toml --some-flag ...`

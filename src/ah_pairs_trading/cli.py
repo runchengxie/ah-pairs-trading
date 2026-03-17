@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+from datetime import date, datetime
 from pathlib import Path
+import sys
+import tomllib
 
 from .config import (
     DEFAULT_CACHE_DIR,
@@ -16,10 +19,24 @@ from .config import (
 )
 
 
+def _config_pre_parser() -> argparse.ArgumentParser:
+    """Parse `--config` early so TOML presets can seed the main argv."""
+
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--config", type=Path, default=None)
+    return parser
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct the CLI parser."""
 
     parser = argparse.ArgumentParser(description="Run an A/H relative-value analysis pipeline.")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Optional TOML preset. Explicit CLI flags override keys loaded from this file.",
+    )
     parser.add_argument("--a-symbol", default="600036", help="A-share symbol used as the mainland leg.")
     parser.add_argument("--h-symbol", default="03968", help="H-share symbol used as the Hong Kong leg.")
     parser.add_argument("--benchmark", default=None, help="Optional benchmark symbol used for rolling beta.")
@@ -226,12 +243,131 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _load_config_payload(path: Path) -> dict[str, object]:
+    """Load a flat TOML config file for CLI-style overrides."""
+
+    try:
+        with path.open("rb") as handle:
+            payload = tomllib.load(handle)
+    except FileNotFoundError as exc:
+        raise ValueError(f"Config file `{path}` does not exist.") from exc
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(f"Config file `{path}` is not valid TOML: {exc}") from exc
+
+    if not isinstance(payload, dict):
+        raise ValueError(f"Config file `{path}` must contain a top-level TOML table.")
+    return payload
+
+
+def _serialize_config_scalar(value: object) -> str:
+    """Convert supported TOML scalar values into CLI token strings."""
+
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%dT%H:%M:%S")
+    if isinstance(value, date):
+        return value.strftime("%Y-%m-%d")
+    return str(value)
+
+
+def _resolve_config_path_value(config_path: Path, value: object) -> Path:
+    """Resolve TOML path-like values relative to the config file location."""
+
+    raw_path = Path(str(value))
+    if raw_path.is_absolute():
+        return raw_path
+    return (config_path.parent / raw_path).resolve()
+
+
+def _config_tokens_from_payload(parser: argparse.ArgumentParser, path: Path) -> list[str]:
+    """Convert flat TOML entries into CLI tokens so argparse validates them."""
+
+    payload = _load_config_payload(path)
+    actions_by_dest = {
+        action.dest: action
+        for action in parser._actions
+        if action.option_strings and action.dest not in {"help", "config"}
+    }
+
+    tokens: list[str] = []
+    unknown_keys: list[str] = []
+
+    for key, value in payload.items():
+        action = actions_by_dest.get(key)
+        if action is None:
+            unknown_keys.append(key)
+            continue
+        if isinstance(value, dict):
+            raise ValueError(
+                f"Config file `{path}` uses a nested table for `{key}`. "
+                "Use flat top-level keys that match CLI flag names."
+            )
+
+        option = action.option_strings[0]
+        is_store_true = (
+            action.nargs == 0
+            and getattr(action, "const", None) is True
+            and bool(getattr(action, "default", False)) is False
+        )
+        if is_store_true:
+            if not isinstance(value, bool):
+                raise ValueError(f"Config key `{key}` in `{path}` must be a boolean.")
+            if value:
+                tokens.append(option)
+            continue
+
+        if key == "z_grid":
+            if isinstance(value, (list, tuple)):
+                tokens.extend((option, ",".join(_serialize_config_scalar(item) for item in value)))
+                continue
+            tokens.extend((option, _serialize_config_scalar(value)))
+            continue
+        if isinstance(value, (list, tuple)):
+            raise ValueError(
+                f"Config key `{key}` in `{path}` must be a scalar value. "
+                "Only `z_grid` currently accepts an array."
+            )
+        if action.type is Path:
+            tokens.extend((option, str(_resolve_config_path_value(path, value))))
+            continue
+
+        tokens.extend((option, _serialize_config_scalar(value)))
+
+    if unknown_keys:
+        supported = ", ".join(sorted(actions_by_dest))
+        raise ValueError(
+            f"Config file `{path}` contains unsupported keys: {', '.join(sorted(unknown_keys))}. "
+            f"Supported keys match CLI destinations: {supported}."
+        )
+    return tokens
+
+
+def _merge_config_argv(parser: argparse.ArgumentParser, argv: list[str]) -> list[str]:
+    """Merge built-in defaults, TOML overrides, and explicit CLI flags."""
+
+    config_path = _config_pre_parser().parse_known_args(argv)[0].config
+    if config_path is None:
+        return argv
+    return _config_tokens_from_payload(parser, config_path) + argv
+
+
+def _parse_z_grid(raw_value: str) -> tuple[float, ...]:
+    """Parse the CLI/config z-grid into a validated numeric tuple."""
+
+    grid = tuple(float(value.strip()) for value in raw_value.split(",") if value.strip())
+    if not grid:
+        raise ValueError("`--z-grid` must contain at least one numeric threshold.")
+    return grid
+
+
 def main(argv: list[str] | None = None) -> int:
     """Parse arguments, run the pipeline, and print a concise summary."""
 
+    raw_argv = list(argv) if argv is not None else sys.argv[1:]
     parser = build_parser()
-    args = parser.parse_args(argv)
-    z_grid = tuple(float(value.strip()) for value in args.z_grid.split(",") if value.strip())
+    args = parser.parse_args(_merge_config_argv(parser, raw_argv))
+    z_grid = _parse_z_grid(args.z_grid)
 
     from .pipeline import build_pipeline_summary, render_pipeline_scorecard, run_ah_relative_value_pipeline
 

@@ -1,11 +1,26 @@
 # CLI 参数参考
 
+## 配置来源与优先级
+
+当前 CLI 支持三层配置来源，优先级从低到高如下：
+
+- 内置默认值
+- `--config path/to/preset.toml`
+- 显式 CLI 参数
+
+`configs/` 里的 TOML 预设使用的就是当前 CLI 的扁平键名，因此 `pairs-trading --config configs/petrochina_smoke.toml --output-dir ...` 这种覆盖方式是官方支持的。
+
 ## 路径约定
 
 - `data/` 保留给手工维护或外部导入的输入文件，例如 `data/fx/*.csv`
 - `artifacts/cache/ah_pairs_trading/` 是默认缓存目录
 - `artifacts/runs/<run-name>/` 是推荐的运行结果目录
-- `configs/` 保存固定实验参数模板；当前先作为预设清单，后续 CLI 会支持 `--config`
+- `configs/` 保存可直接传给 `--config` 的 TOML 预设
+
+## 配置入口
+
+- `--config`
+  TOML 预设文件路径。文件里的键名应与 CLI 参数名对应，例如 `a_symbol`、`fx_csv`、`benchmark_mode`。相对路径会相对该 TOML 文件所在目录解析。
 
 ## 标的与日期
 
@@ -117,43 +132,9 @@
 - `--output-dir`
   输出目录，用于保存 CSV、PNG、JSON、Markdown 摘要；更推荐写到 `artifacts/runs/<run-name>`
 
-## 最常用的两种命令
+## 示例入口
 
-### Smoke test
-
-```bash
-pairs-trading \
-  --a-symbol 601857 \
-  --h-symbol 00857 \
-  --constant-fx-rate 0.92 \
-  --allow-non-coint \
-  --output-dir artifacts/runs/petrochina_ah_smoke
-```
-
-### Research run
-
-先生成 FX CSV：
-
-```bash
-python scripts/fetch_fx_history.py \
-  --start-date 2018-01-01 \
-  --end-date 2024-12-31 \
-  --output-csv data/fx/hkdcny_2018_2024.csv
-```
-
-再跑研究命令：
-
-```bash
-pairs-trading \
-  --a-symbol 601857 \
-  --h-symbol 00857 \
-  --fx-csv data/fx/hkdcny_2018_2024.csv \
-  --hedge-ratio-mode rolling \
-  --cointegration-gate-mode significant \
-  --output-dir artifacts/runs/petrochina_ah_research
-```
-
-对应的固定实验模板：
-
-- `configs/petrochina_smoke.toml`
-- `configs/petrochina_research.toml`
+- Smoke preset：`pairs-trading --config configs/petrochina_smoke.toml`
+- Research preset：`pairs-trading --config configs/petrochina_research.toml`
+- 如果你需要测试入口和覆盖率命令，见 [`development.md`](development.md)
+- 如果你需要数据、FX 和缓存解释，见 [`data_and_fx.md`](data_and_fx.md)

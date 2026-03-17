@@ -1,14 +1,14 @@
 # Canonical research preset for PetroChina A/H.
-# Keys intentionally mirror the current CLI flag names for future `--config` support.
+# Keys intentionally mirror the current CLI flag names for `pairs-trading --config`.
 
 a_symbol = "601857"
 h_symbol = "00857"
 start_date = "2018-01-01"
 end_date = "2024-12-31"
 train_end_date = "2022-12-31"
-fx_csv = "data/fx/hkdcny_2018_2024.csv"
+fx_csv = "../data/fx/hkdcny_2018_2024.csv"
 hedge_ratio_mode = "rolling"
 cointegration_gate_mode = "significant"
 same_issuer_check = "strict"
-cache_dir = "artifacts/cache/ah_pairs_trading"
-output_dir = "artifacts/runs/petrochina_ah_research"
+cache_dir = "../artifacts/cache/ah_pairs_trading"
+output_dir = "../artifacts/runs/petrochina_ah_research"
