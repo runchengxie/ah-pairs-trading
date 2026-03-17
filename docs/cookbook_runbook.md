@@ -92,7 +92,7 @@ pairs-trading --config configs/petrochina_research.toml
 - `half_life_anchor_mode=training`
 - `max_adv_fraction=0.05`
 
-也就是当前最接近“研究默认口径”的组合。
+也就是当前最接近研究默认口径的组合。
 
 如果这对标的在当前训练窗经常被协整 guardrail 拦住，但你仍想先看真实 FX 口径下的完整输出，可以改用：
 
