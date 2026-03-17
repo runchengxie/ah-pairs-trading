@@ -28,6 +28,7 @@ def test_readme_links_only_to_existing_docs() -> None:
     """README navigation should not point at missing documentation pages."""
 
     expected_docs = [
+        "docs/cookbook_runbook.md",
         "docs/strategy_overview.md",
         "docs/execution_modes.md",
         "docs/data_and_fx.md",

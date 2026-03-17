@@ -106,6 +106,7 @@ bash scripts/test.sh coverage
 
 ## 文档导航
 
+- 完整使用手册：[`docs/cookbook_runbook.md`](docs/cookbook_runbook.md)
 - 策略逻辑与边界：[`docs/strategy_overview.md`](docs/strategy_overview.md)
 - 执行模式说明：[`docs/execution_modes.md`](docs/execution_modes.md)
 - 数据、FX 与缓存：[`docs/data_and_fx.md`](docs/data_and_fx.md)
