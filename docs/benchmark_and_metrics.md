@@ -2,7 +2,7 @@
 
 ## 为什么要强调 benchmark
 
-默认执行模式 `long_cheaper_leg_only` 不是市场中性策略，因此不能只看绝对收益，还需要看它是否优于一个合理的被动参照。
+默认执行模式 `long_cheaper_leg_only` 不是市场中性策略，因此不能只看绝对收益。
 
 项目当前的设计思路是：
 
@@ -20,8 +20,8 @@
 
 ### `auto`
 
-- 如果你显式提供了外部 benchmark，就优先使用外部 benchmark
-- 否则在 `long_cheaper_leg_only` 下自动生成内部 A/H basket
+- 如果显式提供了外部 benchmark，就优先使用外部 benchmark
+- 如果没有显式提供，那么在 `long_cheaper_leg_only` 模式下会自动生成内部 A/H basket
 - 在 `paired` 下如果没有显式 benchmark，则保持为空
 
 ### `external`
@@ -112,11 +112,3 @@
 - 交易成本是否吞噬了信号优势
 - 收益是否过度依赖少数交易
 - 在不同阶段是否仍然保留相对优势
-
-如果它只是在牛市里顺着 beta 赚钱，而没有明显优于被动 A/H basket，那么更准确的结论应该是：
-
-- 你抓到的是方向暴露
-
-而不是：
-
-- 你抓到了稳定的相对价值 alpha

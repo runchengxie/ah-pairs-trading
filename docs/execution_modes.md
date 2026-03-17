@@ -15,7 +15,7 @@
 
 - `z > 0` 时只买 H 股
 - `z < 0` 时只买 A 股
-- 不做空另一条腿
+- 不做空另一个标的
 
 ### 适用场景
 
@@ -36,7 +36,7 @@
 
 ### Benchmark 行为
 
-在 `--benchmark-mode auto` 下，项目会自动生成内部 A/H 被动 basket benchmark，用来衡量策略是否优于“被动持有同一发行人 A/H 篮子”。
+在 `--benchmark-mode auto` 下，项目会自动生成内部 A/H 被动 basket benchmark，用来衡量策略是否优于被动持有同一发行人 A/H 篮子。
 
 ## `paired`
 
@@ -68,6 +68,6 @@
 
 ## 重要提醒
 
-- `paired` 模式不是“只是多显示一条腿”，它会真实做空。
-- `long_cheaper_leg_only` 不是“换个姿势的中性策略”，它本质上是单腿执行。
+- `paired` 模式会真实做空。
+- `long_cheaper_leg_only`本质上是买入相对低估的标的。
 - 如果你的账户连 H 股也不能买，那么默认模式也不能完整落地。

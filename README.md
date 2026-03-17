@@ -32,7 +32,7 @@ uv sync --extra dev
 
 ## 30 秒快速开始
 
-### 1. Smoke test
+### 1. 测试运行
 
 第一次确认环境、缓存和输出目录时，直接跑：
 
@@ -55,7 +55,7 @@ pairs-trading \
 - 没有显式传 `--execution-mode` 时，默认是 `long_cheaper_leg_only`。
 - A/H 历史会由 AkShare 在线拉取，并在 `artifacts/cache/ah_pairs_trading/` 下维护按 symbol 的增量主档缓存。
 
-### 2. Research run
+### 2. 研究模式
 
 更严肃的研究口径更推荐先生成真实 FX 历史，再跑主回测：
 
