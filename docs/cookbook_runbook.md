@@ -7,6 +7,7 @@
 
 如果你只想查单个参数，请看 [`cli_reference.md`](cli_reference.md)。
 如果你想理解策略定位，请看 [`strategy_overview.md`](strategy_overview.md)。
+如果你想按研究目标直接选一套对照实验，请看 [`research_playbooks.md`](research_playbooks.md)。
 
 ## 1. 先建立正确预期
 
@@ -827,6 +828,7 @@ pairs-trading \
 
 ## 15. 相关阅读
 
+- 按研究目标分类的剧本：[`research_playbooks.md`](research_playbooks.md)
 - 策略定位与逻辑：[`strategy_overview.md`](strategy_overview.md)
 - 执行模式：[`execution_modes.md`](execution_modes.md)
 - 数据、FX 与缓存：[`data_and_fx.md`](data_and_fx.md)

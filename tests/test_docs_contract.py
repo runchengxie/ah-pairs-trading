@@ -29,6 +29,7 @@ def test_readme_links_only_to_existing_docs() -> None:
 
     expected_docs = [
         "docs/cookbook_runbook.md",
+        "docs/research_playbooks.md",
         "docs/strategy_overview.md",
         "docs/execution_modes.md",
         "docs/data_and_fx.md",
