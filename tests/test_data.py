@@ -330,6 +330,61 @@ def test_load_ah_pair_data_refresh_cache_rebuilds_master_history_without_shrinki
     assert manifest["last_requested_end_date"] == "2024-01-08"
 
 
+def test_load_ah_pair_data_ignores_empty_incremental_boundary_windows(tmp_path, monkeypatch) -> None:
+    """Empty boundary fetches should behave like no-op calendar gaps instead of crashing normalization."""
+
+    index = pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05", "2024-01-08"])
+    a_history = pd.DataFrame({"date": index, "close": [10.0, 10.1, 10.3, 10.4, 10.6]})
+    h_history = pd.DataFrame({"date": index, "close": [8.8, 8.9, 9.0, 9.2, 9.1]})
+    fetch_calls: dict[str, list[tuple[str, str, str, str]]] = {"a": [], "h": []}
+
+    def fake_fetch_a(symbol: str, start_date: str, end_date: str, adjust: str = "qfq") -> pd.DataFrame:
+        fetch_calls["a"].append((symbol, start_date, end_date, adjust))
+        mask = (a_history["date"] >= pd.Timestamp(start_date)) & (a_history["date"] <= pd.Timestamp(end_date))
+        result = a_history.loc[mask].copy()
+        return pd.DataFrame() if result.empty else result
+
+    def fake_fetch_h(symbol: str, start_date: str, end_date: str, adjust: str = "qfq") -> pd.DataFrame:
+        fetch_calls["h"].append((symbol, start_date, end_date, adjust))
+        mask = (h_history["date"] >= pd.Timestamp(start_date)) & (h_history["date"] <= pd.Timestamp(end_date))
+        result = h_history.loc[mask].copy()
+        return pd.DataFrame() if result.empty else result
+
+    monkeypatch.setattr("ah_pairs_trading.data.fetch_a_share_history", fake_fetch_a)
+    monkeypatch.setattr("ah_pairs_trading.data.fetch_h_share_history", fake_fetch_h)
+
+    cache_dir = tmp_path / "cache"
+    base_kwargs = {
+        "a_symbol": "600036",
+        "h_symbol": "03968",
+        "train_end_date": "2024-01-05",
+        "data": DataConfig(constant_fx_rate=0.91),
+        "cache_dir": cache_dir,
+    }
+
+    covered = PipelineConfig(start_date="2024-01-02", end_date="2024-01-08", **base_kwargs)
+    boundary_gap = PipelineConfig(start_date="2024-01-01", end_date="2024-01-08", **base_kwargs)
+
+    load_ah_pair_data(covered)
+    widened = load_ah_pair_data(boundary_gap)
+
+    assert fetch_calls["a"] == [
+        ("600036", "2024-01-02", "2024-01-08", "qfq"),
+        ("600036", "2024-01-01", "2024-01-01", "qfq"),
+    ]
+    assert fetch_calls["h"] == [
+        ("03968", "2024-01-02", "2024-01-08", "qfq"),
+        ("03968", "2024-01-01", "2024-01-01", "qfq"),
+    ]
+    assert widened.model_prices.index.min() == pd.Timestamp("2024-01-02")
+    assert widened.model_prices.index.max() == pd.Timestamp("2024-01-08")
+
+    manifest_path = next((cache_dir / "data" / "a_share_history").glob("*.json"))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["coverage_start"] == "2024-01-02"
+    assert manifest["coverage_end"] == "2024-01-08"
+
+
 def test_load_ah_pair_data_missing_local_history_reports_recovery_hint(tmp_path) -> None:
     """Missing local CSV paths should explain how to switch back to automatic loading."""
 

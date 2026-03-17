@@ -101,6 +101,26 @@ def standardize_history_frame(frame: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def _empty_standardized_history_frame() -> pd.DataFrame:
+    """Return an empty normalized history frame for empty provider responses."""
+
+    return pd.DataFrame(
+        {column: pd.Series(dtype=float) for column in ("open", "high", "low", "close", "volume")},
+        index=pd.DatetimeIndex([], name="date"),
+    )
+
+
+def _standardize_history_frame_allow_empty(frame: pd.DataFrame) -> pd.DataFrame:
+    """Normalize market history while treating empty provider responses as no-op windows."""
+
+    try:
+        return standardize_history_frame(frame)
+    except ValueError:
+        if frame.empty:
+            return _empty_standardized_history_frame()
+        raise
+
+
 def standardize_fx_frame(frame: pd.DataFrame) -> pd.DataFrame:
     """Normalize an FX history frame to a single `fx_rate` column."""
 
@@ -169,7 +189,7 @@ def fetch_a_share_history(symbol: str, start_date: str, end_date: str, adjust: s
     except Exception:
         frame = ak.stock_zh_a_daily(symbol=_normalize_a_symbol_for_daily(symbol), adjust=adjust)
 
-    result = standardize_history_frame(frame)
+    result = _standardize_history_frame_allow_empty(frame)
     return result.loc[start_date:end_date]
 
 
@@ -194,7 +214,7 @@ def fetch_h_share_history(symbol: str, start_date: str, end_date: str, adjust: s
     except Exception:
         frame = ak.stock_hk_daily(symbol=symbol, adjust=adjust)
 
-    result = standardize_history_frame(frame)
+    result = _standardize_history_frame_allow_empty(frame)
     return result.loc[start_date:end_date]
 
 
@@ -248,7 +268,7 @@ def _merge_history_frames(*frames: pd.DataFrame | None) -> pd.DataFrame:
     for frame in frames:
         if frame is None:
             continue
-        normalized = standardize_history_frame(frame)
+        normalized = _standardize_history_frame_allow_empty(frame)
         if empty_template is None:
             empty_template = normalized.iloc[0:0].copy()
         if normalized.empty:
@@ -297,7 +317,7 @@ def _resolve_incremental_history(
     artifact_path, metadata_path = _history_cache_paths(cache_dir, cache_namespace, cache_identity)
     cached_frame = None
     if artifact_path.exists():
-        cached_frame = standardize_history_frame(load_pickle(artifact_path))
+        cached_frame = _standardize_history_frame_allow_empty(load_pickle(artifact_path))
     manifest = _load_history_manifest(metadata_path)
     requested_start = _normalize_cache_date(request_start)
     requested_end = _normalize_cache_date(request_end)
@@ -306,7 +326,7 @@ def _resolve_incremental_history(
     if refresh_cache:
         rebuild_start = min(value for value in (requested_start, cached_start) if value is not None)
         rebuild_end = max(value for value in (requested_end, cached_end) if value is not None)
-        refreshed_frame = standardize_history_frame(fetch_window(rebuild_start, rebuild_end))
+        refreshed_frame = _standardize_history_frame_allow_empty(fetch_window(rebuild_start, rebuild_end))
         atomic_pickle_dump(refreshed_frame, artifact_path)
         atomic_json_dump(
             _build_history_manifest(
@@ -320,7 +340,7 @@ def _resolve_incremental_history(
         return refreshed_frame.loc[requested_start:requested_end]
 
     if cached_frame is None or cached_frame.empty:
-        fetched_frame = standardize_history_frame(fetch_window(requested_start, requested_end))
+        fetched_frame = _standardize_history_frame_allow_empty(fetch_window(requested_start, requested_end))
         atomic_pickle_dump(fetched_frame, artifact_path)
         atomic_json_dump(
             _build_history_manifest(
@@ -403,7 +423,7 @@ def _resolve_frame(
 
     if request_start is None or request_end is None:
         raise ValueError("Automatic history loading requires `request_start` and `request_end`.")
-    return standardize_history_frame(fetch_window(request_start, request_end))
+    return _standardize_history_frame_allow_empty(fetch_window(request_start, request_end))
 
 
 def _resolve_fx_frame(
