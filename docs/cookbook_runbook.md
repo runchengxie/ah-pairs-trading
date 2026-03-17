@@ -77,7 +77,7 @@ pairs-trading --config configs/petrochina_smoke.toml
 - 输出目录能落盘
 - 结果摘要能生成
 
-### 3.2 跑推荐研究口径
+### 3.2 跑严格研究口径
 
 ```bash
 pairs-trading --config configs/petrochina_research.toml
@@ -93,6 +93,14 @@ pairs-trading --config configs/petrochina_research.toml
 - `max_adv_fraction=0.05`
 
 也就是当前最接近“研究默认口径”的组合。
+
+如果这对标的在当前训练窗经常被协整 guardrail 拦住，但你仍想先看真实 FX 口径下的完整输出，可以改用：
+
+```bash
+pairs-trading --config configs/petrochina_exploratory.toml
+```
+
+这个 preset 只额外打开 `allow_non_coint = true`，其他研究参数与严格版保持一致。
 
 ### 3.3 研究 paired 模式
 
@@ -565,7 +573,7 @@ pairs-trading --config configs/petrochina_smoke.toml
 
 - 正式结论
 
-### 配方 B：推荐的 long-only 研究基线
+### 配方 B：推荐的严格 long-only 研究基线
 
 ```bash
 pairs-trading --config configs/petrochina_research.toml
@@ -575,6 +583,22 @@ pairs-trading --config configs/petrochina_research.toml
 
 - 当前推荐研究口径
 - 包含 next-open、rolling hedge ratio、双 gate、half-life anchor、ADV cap
+
+### 配方 B（探索版）：宽松 long-only 研究入口
+
+```bash
+pairs-trading --config configs/petrochina_exploratory.toml
+```
+
+用途：
+
+- 真实 FX 口径下先跑通完整研究产物
+- 训练期协整暂时不过时，先看 rolling 指标、交易分布和成本拆分
+
+不适合：
+
+- 正式结论
+- 直接把结果当成严格基线
 
 ### 配方 C：对比“有没有 ECM gate”
 
@@ -787,10 +811,7 @@ pairs-trading \
 ### 宽松探索，不因训练期协整失败中止
 
 ```bash
-pairs-trading \
-  --config configs/petrochina_research.toml \
-  --allow-non-coint \
-  --output-dir artifacts/runs/petrochina_allow_non_coint
+pairs-trading --config configs/petrochina_exploratory.toml
 ```
 
 这只适合：
@@ -799,6 +820,15 @@ pairs-trading \
 - 宽松探索
 
 不适合正式结论。
+
+如果你只是偶尔在严格 preset 上临时覆写，也等价于：
+
+```bash
+pairs-trading \
+  --config configs/petrochina_research.toml \
+  --allow-non-coint \
+  --output-dir artifacts/runs/petrochina_allow_non_coint
+```
 
 ### 关闭容量约束做对照
 

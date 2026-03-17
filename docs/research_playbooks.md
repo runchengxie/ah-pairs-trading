@@ -49,7 +49,7 @@ pairs-trading --config configs/petrochina_smoke.toml
 
 不要在这个剧本上做正式结论，因为它默认允许非协整、也允许常数汇率。
 
-## 3. 剧本 B：建立推荐的 long-only 研究基线
+## 3. 剧本 B：建立推荐的严格 long-only 研究基线
 
 目标：
 拿到当前最接近“研究默认口径”的结果，后面所有对照实验都从这里偏离。
@@ -66,6 +66,14 @@ pairs-trading --config configs/petrochina_research.toml
 - `ecm_gate_mode=significant_negative`
 - `half_life_anchor_mode=training`
 - `max_adv_fraction=0.05`
+
+如果这对标的在当前训练窗经常过不了训练期协整校验，但你想先看真实 FX 口径下的完整研究产物，可以改用：
+
+```bash
+pairs-trading --config configs/petrochina_exploratory.toml
+```
+
+这个探索 preset 只额外打开 `allow_non_coint=true`；它适合宽松探索，不替代严格基线。
 
 优先看这些文件：
 

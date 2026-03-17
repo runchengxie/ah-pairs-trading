@@ -142,6 +142,36 @@ def test_cli_loads_research_preset_via_config_flag(monkeypatch) -> None:
     assert config.output_dir == Path("artifacts/runs/petrochina_ah_research").resolve()
 
 
+def test_cli_loads_exploratory_preset_via_config_flag(monkeypatch) -> None:
+    """The exploratory preset should only relax the training cointegration abort."""
+
+    captured_config = {}
+
+    def fake_run(config):
+        captured_config["config"] = config
+        return object()
+
+    monkeypatch.setattr(pipeline, "run_ah_relative_value_pipeline", fake_run)
+    monkeypatch.setattr(pipeline, "build_pipeline_summary", lambda config, result: {"ok": True})
+    monkeypatch.setattr(pipeline, "render_pipeline_scorecard", lambda summary: "ok")
+
+    exit_code = cli.main(["--config", "configs/petrochina_exploratory.toml"])
+
+    config = captured_config["config"]
+    assert exit_code == 0
+    assert config.a_symbol == "601857"
+    assert config.h_symbol == "00857"
+    assert config.data.fx_csv_path == Path("data/fx/hkdcny_2018_2024.csv").resolve()
+    assert config.strategy.hedge_ratio_mode == "rolling"
+    assert config.strategy.cointegration_gate_mode == "significant"
+    assert config.strategy.ecm_gate_mode == "significant_negative"
+    assert config.strategy.half_life_anchor_mode == "training"
+    assert config.strategy.execution_timing == "next_open"
+    assert config.same_issuer_check == "strict"
+    assert config.require_significant_cointegration is False
+    assert config.output_dir == Path("artifacts/runs/petrochina_ah_exploratory").resolve()
+
+
 def test_cli_explicit_flags_override_config_values(monkeypatch, tmp_path) -> None:
     """Explicit CLI flags should win over values loaded from a TOML preset."""
 

@@ -70,10 +70,17 @@ python scripts/fetch_fx_history.py \
 pairs-trading --config configs/petrochina_research.toml
 ```
 
+如果你想保留真实 FX 和研究期参数，但不希望因为训练集协整不显著直接中止，可以改用：
+
+```bash
+pairs-trading --config configs/petrochina_exploratory.toml
+```
+
 说明：
 
 - 正式回测更推荐 `--fx-csv`，而不是 `--constant-fx-rate`。
-- 不加 `--allow-non-coint` 时，训练集协整不显著会直接中止。
+- `configs/petrochina_research.toml` 是严格版；训练集协整不显著会直接中止。
+- `configs/petrochina_exploratory.toml` 只额外打开 `allow_non_coint = true`，适合宽松探索，不适合正式结论。
 - `pairs-trading --config ... --some-flag ...` 的优先级是：内置默认值 < TOML 预设 < 显式 CLI 参数。
 - 如果你还没安装 CLI，也可以继续用 `python -m ah_pairs_trading --config configs/petrochina_research.toml`。
 

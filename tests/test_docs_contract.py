@@ -18,6 +18,7 @@ def test_readme_documents_config_and_testing_entrypoints() -> None:
 
     assert "pairs-trading --config configs/petrochina_smoke.toml" in readme
     assert "pairs-trading --config configs/petrochina_research.toml" in readme
+    assert "pairs-trading --config configs/petrochina_exploratory.toml" in readme
     assert "bash scripts/test.sh" in readme
     assert "scripts/test.sh unit" in readme
     assert "scripts/test.sh integration" in readme

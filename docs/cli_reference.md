@@ -168,5 +168,6 @@
 
 - Smoke preset：`pairs-trading --config configs/petrochina_smoke.toml`
 - Research preset：`pairs-trading --config configs/petrochina_research.toml`
+- Exploratory preset：`pairs-trading --config configs/petrochina_exploratory.toml`
 - 如果你需要测试入口和覆盖率命令，见 [`development.md`](development.md)
 - 如果你需要数据、FX 和缓存解释，见 [`data_and_fx.md`](data_and_fx.md)
