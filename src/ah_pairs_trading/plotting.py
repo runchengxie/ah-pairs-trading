@@ -198,3 +198,65 @@ def plot_excess_returns(comparison: pd.DataFrame, output_path: str | Path | None
     if path is not None:
         figure.savefig(path, dpi=160, bbox_inches="tight")
     return figure
+
+
+def plot_ou_params(ou_params: pd.DataFrame, output_path: str | Path | None = None):
+    """Plot the rolling OU estimates: k, half-life, and Ljung-Box p-value."""
+
+    import matplotlib.pyplot as plt
+
+    figure, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
+    axes[0].plot(ou_params.index, ou_params["ou_k"], label="k")
+    axes[0].set_ylabel("k")
+    axes[0].grid(True, linestyle="--", alpha=0.6)
+    axes[0].legend()
+
+    axes[1].plot(ou_params.index, ou_params["ou_half_life_days"], label="Half-life (days)")
+    axes[1].set_ylabel("Half-life")
+    axes[1].grid(True, linestyle="--", alpha=0.6)
+    axes[1].legend()
+
+    axes[2].plot(ou_params.index, ou_params["ou_lb_pvalue"], label="Ljung-Box p-value")
+    axes[2].axhline(0.05, color="red", linestyle="--", label="p=0.05")
+    axes[2].set_xlabel("Date")
+    axes[2].set_ylabel("p-value")
+    axes[2].grid(True, linestyle="--", alpha=0.6)
+    axes[2].legend()
+    figure.suptitle("Rolling OU MLE Diagnostics")
+
+    path = _prepare_output_path(output_path)
+    if path is not None:
+        figure.savefig(path, dpi=160, bbox_inches="tight")
+    return figure
+
+
+def plot_nav_benchmarks(
+    equity_curve: pd.DataFrame,
+    benchmark_frames: dict[str, pd.DataFrame],
+    title: str = "NAV vs Benchmarks",
+    output_path: str | Path | None = None,
+):
+    """Plot the weight-engine strategy NAV against its benchmark curves."""
+
+    import matplotlib.pyplot as plt
+
+    figure, axis = plt.subplots(figsize=(12, 6))
+    axis.plot(
+        equity_curve.index,
+        equity_curve["capital"] / float(equity_curve["capital"].iloc[0]),
+        label="Strategy",
+        linewidth=2.0,
+    )
+    for name, frame in benchmark_frames.items():
+        if "nav" in frame.columns and not frame.empty:
+            axis.plot(frame.index, frame["nav"], label=name)
+    axis.set_title(title)
+    axis.set_xlabel("Date")
+    axis.set_ylabel("NAV")
+    axis.grid(True, linestyle="--", alpha=0.6)
+    axis.legend()
+
+    path = _prepare_output_path(output_path)
+    if path is not None:
+        figure.savefig(path, dpi=160, bbox_inches="tight")
+    return figure

@@ -19,6 +19,10 @@ CointegrationGateMode = Literal["off", "significant"]
 ExecutionTiming = Literal["close", "next_open"]
 ECMGateMode = Literal["off", "significant_negative"]
 HalfLifeAnchorMode = Literal["off", "training"]
+DataProvider = Literal["akshare", "tushare", "simulated"]
+BacktestEngine = Literal["trade", "weight"]
+MeanReversionGateMode = Literal["off", "half_life_range", "lb_filter", "both"]
+PositionSizingMode = Literal["fixed", "vol_target"]
 
 DEFAULT_CACHE_DIR = Path("artifacts/cache/ah_pairs_trading")
 DEFAULT_RUNS_DIR = Path("artifacts/runs")
@@ -42,7 +46,7 @@ class SegmentWindow:
 class DataConfig:
     """Inputs that determine how A/H and FX histories are loaded."""
 
-    data_provider: str = "akshare"
+    data_provider: DataProvider = "akshare"
     a_adjust: str = "qfq"
     h_adjust: str = "qfq"
     fx_symbol: str = "HKD/CNY"
@@ -53,6 +57,20 @@ class DataConfig:
     fx_csv_path: Path | None = None
     benchmark_csv_path: Path | None = None
     constant_fx_rate: float | None = None
+    tushare_token: str | None = None
+    tushare_ts_code_a: str | None = None
+    tushare_ts_code_h: str | None = None
+    tushare_adjust: str = "qfq"
+    simulation_seed: int = 7
+    simulation_n_days: int = 1500
+    simulation_regime_shift_day: int | None = 900
+    simulation_mu_h: float = 0.08
+    simulation_sigma_h: float = 0.22
+    simulation_k: float = 20.0
+    simulation_l: float = 0.0
+    simulation_a: float = 0.05
+    simulation_beta: float = 1.1
+    simulation_rho: float = -0.25
 
 
 @dataclass(slots=True, frozen=True)
@@ -85,6 +103,25 @@ class StrategyConfig:
     max_adv_fraction: float | None = 0.05
     a_lot_size: int = 100
     h_lot_size: int = 100
+    backtest_engine: BacktestEngine = "trade"
+    mean_reversion_gate_mode: MeanReversionGateMode = "off"
+    ou_window: int = 252
+    ou_det_order: int = 0
+    ou_k_ar_diff: int = 1
+    ou_lags: int = 10
+    half_life_min_days: float = 5.0
+    half_life_max_days: float = 90.0
+    lb_p_value_min: float = 0.05
+    min_weight: float = 0.10
+    position_sizing_mode: PositionSizingMode = "fixed"
+    target_vol: float = 0.10
+    vol_window: int = 60
+    vol_min_periods: int | None = None
+    max_leverage: float = 2.0
+    max_drawdown: float = 0.10
+    suspend_days: int = 20
+    portfolio_max_drawdown: float = 0.18
+    risk_free_rate: float = 0.0
 
 
 @dataclass(slots=True, frozen=True)
@@ -105,6 +142,8 @@ class CostConfig:
     h_short_borrow_apr_bps: float = 150.0
     a_long_financing_apr_bps: float = 0.0
     h_long_financing_apr_bps: float = 0.0
+    base_cost_bps: float = 3.0
+    impact_cost_bps: float = 2.0
 
 
 @dataclass(slots=True, frozen=True)

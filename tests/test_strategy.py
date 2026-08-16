@@ -501,3 +501,144 @@ def test_borrow_costs_reduce_paired_pnl() -> None:
 
     assert charged.summary.borrow_costs > 0.0
     assert charged.summary.final_capital < baseline.summary.final_capital
+
+
+def test_mean_reversion_gate_blocks_entries_and_forces_exit() -> None:
+    index = pd.date_range("2024-01-01", periods=5, freq="B")
+    signal_frame = pd.DataFrame(
+        {
+            "600036": [100.0, 100.0, 100.0, 100.0, 100.0],
+            "03968": [50.0, 50.0, 50.0, 50.0, 50.0],
+            "a_open": [100.0] * 5,
+            "h_open": [50.0] * 5,
+            "a_adv": [1_000_000.0] * 5,
+            "h_adv": [1_000_000.0] * 5,
+            "intercept": [0.1] * 5,
+            "hedge_ratio": [1.0] * 5,
+            "spread": [0.12, 0.14, 0.13, 0.12, 0.01],
+            "zscore": [1.2, 1.4, 1.1, 1.3, 0.1],
+            "cheap_leg": ["h", "h", "h", "h", "flat"],
+            "mean_reversion_gate_pass": pd.Series([True, True, False, False, True], index=index, dtype="boolean"),
+        },
+        index=index,
+    )
+
+    result = backtest_relative_value_strategy(
+        signal_frame=signal_frame,
+        a_symbol="600036",
+        h_symbol="03968",
+        hedge_ratio=1.0,
+        strategy_config=StrategyConfig(
+            entry_z_candidates=(1.0,),
+            exit_z=0.25,
+            stop_z=2.5,
+            max_holding_days=20,
+            initial_capital=100_000.0,
+            execution_mode="paired",
+            mean_reversion_gate_mode="both",
+        ),
+        cost_config=zero_cost_config(),
+    )
+
+    assert result.summary.trade_count == 1
+    assert result.trades.iloc[0]["exit_reason"] == "mean_reversion_breakdown"
+    assert result.equity_curve.loc[index[3], "position"] == "flat"
+
+
+def test_mean_reversion_gate_requires_column_when_enabled() -> None:
+    signal_frame, hedge_ratio = make_ah_signal_frame()
+    try:
+        backtest_relative_value_strategy(
+            signal_frame=signal_frame,
+            a_symbol="600036",
+            h_symbol="03968",
+            hedge_ratio=hedge_ratio,
+            strategy_config=StrategyConfig(
+                entry_z_candidates=(0.9,),
+                exit_z=0.25,
+                stop_z=2.5,
+                max_holding_days=20,
+                initial_capital=100_000.0,
+                execution_mode="paired",
+                mean_reversion_gate_mode="half_life_range",
+            ),
+            cost_config=zero_cost_config(),
+        )
+        raise AssertionError("expected a ValueError for a missing mean-reversion gate column")
+    except ValueError as exc:
+        assert "mean_reversion_gate_pass" in str(exc)
+
+
+def test_vol_target_sizing_reduces_volatility() -> None:
+    signal_frame, hedge_ratio = make_ah_signal_frame()
+    common = dict(
+        entry_z_candidates=(0.9,),
+        exit_z=0.25,
+        stop_z=2.5,
+        z_window=20,
+        z_min_periods=20,
+        max_holding_days=20,
+        position_size_fraction=1.0,
+        initial_capital=100_000.0,
+        execution_mode="long_cheaper_leg_only",
+        vol_window=20,
+        max_leverage=1.0,
+    )
+    fixed_result = backtest_relative_value_strategy(
+        signal_frame=signal_frame,
+        a_symbol="600036",
+        h_symbol="03968",
+        hedge_ratio=hedge_ratio,
+        strategy_config=StrategyConfig(**common, position_sizing_mode="fixed"),
+        cost_config=zero_cost_config(),
+    )
+    targeted_result = backtest_relative_value_strategy(
+        signal_frame=signal_frame,
+        a_symbol="600036",
+        h_symbol="03968",
+        hedge_ratio=hedge_ratio,
+        strategy_config=StrategyConfig(**common, position_sizing_mode="vol_target", target_vol=0.05),
+        cost_config=zero_cost_config(),
+    )
+    assert targeted_result.summary.trade_count > 0
+    assert targeted_result.summary.annual_volatility < fixed_result.summary.annual_volatility
+
+
+def test_drawdown_breaker_suspends_after_losses() -> None:
+    index = pd.date_range("2024-01-01", periods=20, freq="B")
+    signal_frame = pd.DataFrame(
+        {
+            "600036": [100.0] * 20,
+            "03968": [50.0] * 20,
+            "a_open": [100.0] * 20,
+            "h_open": [50.0] * 20,
+            "a_adv": [1_000_000.0] * 20,
+            "h_adv": [1_000_000.0] * 20,
+            "intercept": [0.1] * 20,
+            "hedge_ratio": [1.0] * 20,
+            "spread": [0.0] * 20,
+            "zscore": [1.0] * 20,
+            "cheap_leg": ["h"] * 20,
+        },
+        index=index,
+    )
+    strategy_config = StrategyConfig(
+        entry_z_candidates=(0.5,),
+        exit_z=0.0,
+        stop_z=5.0,
+        max_holding_days=100,
+        position_size_fraction=1.0,
+        initial_capital=100_000.0,
+        execution_mode="long_cheaper_leg_only",
+        max_drawdown=0.0,
+        portfolio_max_drawdown=0.0,
+    )
+    result = backtest_relative_value_strategy(
+        signal_frame=signal_frame,
+        a_symbol="600036",
+        h_symbol="03968",
+        hedge_ratio=1.0,
+        strategy_config=strategy_config,
+        cost_config=zero_cost_config(),
+    )
+    assert result.summary.trade_count <= 1
