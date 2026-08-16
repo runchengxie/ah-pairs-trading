@@ -15,8 +15,8 @@
 
 处理：
 
-- 如果你只是想先跑通流程或做宽松探索：加 `--allow-non-coint`
-- 如果你在做严肃研究：不要加，换标的、换窗口，或重新核对 A/H 代码对
+- 如果你想先跑通流程或做宽松探索，加 `--allow-non-coint`
+- 如果你在做严肃研究，不要加，换标的、换窗口，或重新核对 A/H 代码对
 
 ## 2. 加了 `--resume-from-cache` 还是报协整不显著
 
@@ -27,8 +27,8 @@
 
 处理：
 
-- 保持 guardrail：不要加 `--allow-non-coint`
-- 宽松跑完整流程：显式加 `--allow-non-coint`
+- 想保持 guardrail，不要加 `--allow-non-coint`
+- 想宽松跑完整流程，显式加 `--allow-non-coint`
 
 ## 3. `FileNotFoundError: ... data/xxxx.csv`
 
@@ -51,7 +51,7 @@
 
 处理：
 
-- 正式回测：提供 `--fx-csv`
+- 正式回测，提供 `--fx-csv`
 - 如果你手头没有 FX CSV，可以先运行：
 
 ```bash
@@ -61,8 +61,8 @@ python scripts/fetch_fx_history.py \
   --output-csv data/fx/hkdcny_2018_2024.csv
 ```
 
-- 这类 FX CSV 仍建议保留在 `data/fx/`，主回测结果则统一写到 `artifacts/runs/<run-name>/`
-- 快速验证：临时提供 `--constant-fx-rate`
+- 快速验证，临时提供 `--constant-fx-rate`
+- 使用 `--data-provider simulated` 时，程序会自动填入一个静态汇率
 
 ## 5. `601857/00883` 这种代码对直接被拦下
 
@@ -108,9 +108,34 @@ python scripts/fetch_fx_history.py \
 
 - 先安装项目依赖
 - 或改为显式传本地 CSV
-- 如果你怀疑 `artifacts/cache/ah_pairs_trading/` 下的 symbol 主档已经过期或不一致，可以加 `--refresh-cache` 强制重建
+- 如果怀疑 `artifacts/cache/ah_pairs_trading/` 下的 symbol 主档过期或不一致，可以加 `--refresh-cache` 强制重建
+- 需要完全离线时，改用 `--data-provider simulated`
 
-## 9. `Config file ... does not exist`
+## 9. `The tushare data provider requires a token ...`
+
+原因：
+
+- 你选了 `--data-provider tushare`
+- 但没有提供 token
+
+处理：
+
+- 加 `--tushare-token`，或设置环境变量 `TUSHARE_TOKEN`
+- 不想配 Tushare 时，改用默认的 `akshare` 或离线 `simulated`
+
+## 10. `The signal frame is missing OU diagnostics ...`
+
+原因：
+
+- 你打开了 `--mean-reversion-gate-mode` 或 `--backtest-engine weight`
+- 但 pipeline 没有生成 `ou_*` 列
+
+处理：
+
+- 确认没有手动删掉 `signal_frame.csv` 里的 OU 列
+- 权重引擎和均值回归 gate 都依赖滚动 OU 估计，重新跑一遍完整 pipeline 即可
+
+## 11. `Config file ... does not exist`
 
 原因：
 
@@ -122,7 +147,7 @@ python scripts/fetch_fx_history.py \
 - 先确认路径是否写对
 - 如果你在 TOML 里继续引用相对路径，记住这些路径会相对 TOML 文件自身解析
 
-## 10. `Config file ... contains unsupported keys ...`
+## 12. `Config file ... contains unsupported keys ...`
 
 原因：
 
