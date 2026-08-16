@@ -4,10 +4,11 @@
 
 默认执行模式 `long_cheaper_leg_only` 不是市场中性策略，因此不能只看绝对收益。
 
-项目当前的设计思路是：
+当前设计思路：
 
 - long-only 模式默认对比同一发行人的内部 A/H 被动 basket
 - paired 模式默认不自动引入内部 benchmark
+- 权重引擎额外输出买入持有、常数混合和波动率目标混合等基准
 
 ## `--benchmark-mode`
 
@@ -43,7 +44,7 @@
 
 ## 内部 benchmark 的含义
 
-内部 benchmark 的目标不是模拟市场指数，而是回答一个更贴近当前策略定位的问题：
+内部 benchmark 用来回答一个更贴近当前策略定位的问题：
 
 > 既然你已经承认自己不是市场中性策略，那么你的信号驱动买入，是否优于被动持有同一发行人的 A/H 篮子？
 
@@ -51,6 +52,18 @@
 
 - `hedge_ratio`
 - `equal_weight`
+
+## 权重引擎的基准
+
+`--backtest-engine weight` 运行时，除了主回测，还会在测试集上生成几组对照基准，写入 `test_bm_*.csv`：
+
+- `bm_hold_5050`，买入持有，初始 50/50 权重后不再平衡
+- `bm_mix_5050`，常数混合，每日再平衡回 50/50
+- `bm_mix_5050_risk`，常数混合加上波动率目标
+- `bm_hold_a`，只买入 A 股
+- `bm_hold_h`，只买入 H 股
+
+这些基准和策略净值会画在同一张 `test_weight_nav_vs_benchmarks.png` 里，方便判断信号倾斜是否真的贡献了超额。
 
 ## 输出结果里会看到什么
 
@@ -87,7 +100,9 @@
 - `beta`
 - `alpha`
 
-如果没有解析到 benchmark，终端 scorecard 里的 `Rolling Beta` 会明确显示 unavailable，而不是输出一串 `n/a`。
+如果没有解析到 benchmark，终端 scorecard 里的 `Rolling Beta` 会明确显示 unavailable。
+
+权重引擎启用后，scorecard 末尾还会显示 `Rolling OU MLE` 一栏，包含半衰期、均值回归速度和 Ljung-Box p 值等汇总。
 
 ## 输出文件
 
@@ -102,6 +117,8 @@
 - `train_grid_search.csv`
 - `signal_frame.csv`
 - `rolling_cointegration.csv`
+- `ou_params.csv`
+- `test_bm_hold_5050.csv` 等权重引擎基准
 - 诊断图表
 
 ## 怎么解读 long-only 结果

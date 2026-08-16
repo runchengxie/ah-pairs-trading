@@ -19,6 +19,8 @@
 | 我想比较 training 和 rolling hedge ratio 谁更稳 | 剧本 H |
 | 我想换 benchmark 口径，确认结论是不是只对某个对照成立 | 剧本 I |
 | 我想做离线复现、共享数据集或本地 CSV 研究 | 剧本 J |
+| 我想跑滚动 OU MLE 权重引擎，看连续权重和基准 | 剧本 K |
+| 我想在没有网络的环境里验证整条链路 | 剧本 L |
 
 下面所有剧本默认都基于：
 
@@ -52,7 +54,7 @@ pairs-trading --config configs/petrochina_smoke.toml
 ## 3. 剧本 B：建立推荐的严格 long-only 研究基线
 
 目标：
-拿到当前最接近“研究默认口径”的结果，后面所有对照实验都从这里偏离。
+拿到当前最接近研究默认口径的结果，后面所有对照实验都从这里偏离。
 
 ```bash
 pairs-trading --config configs/petrochina_research.toml
@@ -73,7 +75,7 @@ pairs-trading --config configs/petrochina_research.toml
 pairs-trading --config configs/petrochina_exploratory.toml
 ```
 
-这个探索 preset 只额外打开 `allow_non_coint=true`；它适合宽松探索，不替代严格基线。
+这个探索 preset 只额外打开 `allow_non_coint=true`。它适合宽松探索，不替代严格基线。
 
 优先看这些文件：
 
@@ -176,7 +178,7 @@ pairs-trading \
 ## 6. 剧本 E：做 gate 消融实验
 
 目标：
-把 cointegration gate 和 ECM gate 分开看，别把“加了两个 gate 后结果变了”混成一个结论。
+把 cointegration gate 和 ECM gate 分开看，避免把两者的效果混成一个结论。
 
 无 gate：
 
@@ -225,7 +227,7 @@ pairs-trading \
 ## 7. 剧本 F：让 half-life 真正参与参数选择
 
 目标：
-比较“固定经验参数”和“训练期 half-life 锚定参数”两种方式。
+比较固定经验参数和训练期 half-life 锚定参数两种方式。
 
 固定窗口：
 
@@ -255,12 +257,12 @@ pairs-trading \
 - 交易频率有没有变得更合理
 - `avg_holding_days` 是否更贴近均值回归节奏
 
-这一步的目标不是追求某一次收益更高，而是看参数是否更有统计锚点。
+这一步要看参数是否更有统计锚点，不追求某一次收益更高。
 
 ## 8. 剧本 G：比较两类主信号
 
 目标：
-区分“价差 z-score”与“return-spread”家族是否在这个标的上表现不同。
+区分价差 z-score 与 return-spread 家族是否在这个标的上表现不同。
 
 z-score 基线：
 
@@ -414,7 +416,56 @@ pairs-trading \
 
 如果你要做更正式的复现实验，建议连 benchmark 也改成 `--benchmark-csv` 固定输入。
 
-## 12. 推荐执行顺序
+## 12. 剧本 K：跑滚动 OU 权重引擎
+
+目标：
+把从旧仓库迁移过来的滚动 OU MLE 引擎用起来，看连续权重、波动率目标和基准表现。
+
+```bash
+pairs-trading \
+  --config configs/petrochina_research.toml \
+  --backtest-engine weight \
+  --mean-reversion-gate-mode both \
+  --position-sizing-mode vol_target \
+  --ou-window 126 \
+  --output-dir artifacts/runs/petrochina_weight_engine
+```
+
+优先看这些文件：
+
+- `ou_params.csv`，每天一组 OU MLE 参数
+- `test_bm_hold_5050.csv` 等五组买入持有、常数混合基准
+- `test_weight_nav_vs_benchmarks.png`，策略与基准的净值对比
+
+重点回答：
+
+- 半衰期和 Ljung-Box p 值是否稳定
+- 信号倾斜相对买入持有基准是否有超额
+- 波动率目标是否把风险压到了目标水平
+
+## 13. 剧本 L：完全离线验证
+
+目标：
+没有网络或不想配置数据源时，用模拟数据验证整条链路。
+
+```bash
+pairs-trading \
+  --data-provider simulated \
+  --constant-fx-rate 0.92 \
+  --start-date 2018-01-01 \
+  --end-date 2021-12-31 \
+  --train-end-date 2020-12-31 \
+  --allow-non-coint \
+  --output-dir artifacts/runs/simulated_smoke
+```
+
+模拟数据生成两条具有已知协整结构的行情，适合：
+
+- 跑通数据、诊断、信号、回测和输出
+- 验证 OU 估计和均值回归 gate
+- 写测试时离线复现
+
+## 14. 推荐执行顺序
 
 如果你是第一次系统跑这个项目，建议按这个顺序：
 
@@ -428,9 +479,9 @@ pairs-trading \
 8. 剧本 I，最后再换 benchmark 口径看结论是否稳。
 
 这条顺序的核心思想是：
-先补执行现实性，再讨论模型复杂度；先有基线，再做消融；先确认 long-only 逻辑站得住，再决定是否升级到 paired。
+先补执行现实性，再讨论模型复杂度。先有基线，再做消融。先确认 long-only 逻辑站得住，再决定是否升级到 paired。
 
-## 13. 建议你自己留一张对照表
+## 15. 建议你自己留一张对照表
 
 每跑完一个剧本，至少记录这些字段：
 
@@ -452,13 +503,13 @@ pairs-trading \
 - `borrow_costs`
 - `financing_costs`
 
-你后面真正要看的不是“哪次回测最高”，而是：
+你后面真正要看的重点是：
 
 - 哪些结论在多组假设下仍然成立
 - 哪些收益一旦把成本和容量假设调严就消失
 - 哪些功能是在降噪，哪些功能只是把样本切得更少
 
-## 14. 相关阅读
+## 16. 相关阅读
 
 - 总手册：[`cookbook_runbook.md`](cookbook_runbook.md)
 - 策略定位：[`strategy_overview.md`](strategy_overview.md)

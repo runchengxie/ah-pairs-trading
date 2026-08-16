@@ -2,12 +2,12 @@
 
 ## 总览
 
-项目当前支持两种执行模式：
+项目支持两种执行模式：
 
 - `long_cheaper_leg_only`
 - `paired`
 
-两者共享同一套信号生成逻辑，但执行层含义完全不同。
+两者共享同一套信号生成逻辑，但执行层含义不同。
 
 ## `long_cheaper_leg_only`
 
@@ -59,22 +59,29 @@
 当前回测会显式计入：
 
 - 基础手续费
-- H 股印花税与 FX conversion
+- H 股印花税与 FX 换汇成本
 - base slippage 与基于 ADV 的冲击成本
-- `paired` 下的 short borrow / long financing carry
+- `paired` 下的 short borrow 与 long financing carry
 
 ### Benchmark 行为
 
-在 `--benchmark-mode auto` 下，如果你没有显式提供 benchmark，项目不会自动生成内部 benchmark。
+在 `--benchmark-mode auto` 下，如果你没有显式提供 benchmark，项目不会为 `paired` 自动生成内部 benchmark。
+
+## 与回测引擎的关系
+
+`--execution-mode` 决定逐笔引擎里如何处理信号，`--backtest-engine` 决定用哪套回测逻辑。两套引擎都接受这两种执行模式的信号语义：
+
+- `trade` 引擎按模式决定是否真实做空
+- `weight` 引擎输出双腿连续权重，适合在 `paired` 语义下观察倾斜方向
 
 ## 如何选择
 
 如果你是大陆居民、账户不能做空，默认应该从 `long_cheaper_leg_only` 开始。
 
-如果你具备可做空环境，且你的目标是研究更接近传统双腿配对交易的行为，再使用 `paired`。
+如果你具备可做空环境，且目标更接近传统双腿配对交易，再使用 `paired`。
 
 ## 重要提醒
 
 - `paired` 模式会真实做空。
-- `long_cheaper_leg_only`本质上是买入相对低估的标的。
+- `long_cheaper_leg_only` 本质上是买入相对低估的标的。
 - 如果你的账户连 H 股也不能买，那么默认模式也不能完整落地。

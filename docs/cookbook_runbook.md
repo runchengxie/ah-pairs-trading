@@ -1,6 +1,6 @@
 # A/H 相对价值 Cookbook / Runbook
 
-这份文档的目标不是重复参数字典，而是回答两个更实际的问题：
+这份文档不重复参数字典，只回答两个更实际的问题：
 
 - 第一次跑这个项目，应该按什么顺序做
 - 原有功能和新加的执行现实性、ECM、half-life、容量约束该怎么组合
@@ -138,6 +138,35 @@ pairs-trading \
 - 固定输入复现
 - 替换成你自己清洗过的数据
 
+### 3.5 完全离线跑通流程
+
+没有网络或不想配置数据源时，用模拟数据：
+
+```bash
+pairs-trading \
+  --data-provider simulated \
+  --constant-fx-rate 0.92 \
+  --start-date 2018-01-01 \
+  --end-date 2024-12-31 \
+  --train-end-date 2022-12-31 \
+  --allow-non-coint \
+  --output-dir artifacts/runs/simulated_smoke
+```
+
+模拟数据不需要联网和 token，适合跑通完整链路、验证 OU 估计和权重引擎。
+
+### 3.6 跑滚动 OU 权重引擎
+
+```bash
+pairs-trading \
+  --config configs/petrochina_research.toml \
+  --backtest-engine weight \
+  --ou-window 126 \
+  --output-dir artifacts/runs/petrochina_weight_engine
+```
+
+权重引擎需要滚动 OU 估计，会输出 `ou_params.csv` 和五组买入持有、常数混合基准。
+
 ## 4. 推荐操作顺序
 
 建议按下面顺序，而不是一开始就调一堆参数。
@@ -209,6 +238,8 @@ pairs-trading --config configs/petrochina_research.toml
 - `test_equity_curve.csv`
 - `train_trades.csv`
 - `test_trades.csv`
+- `ou_params.csv`
+- `test_bm_hold_5050.csv` 等权重引擎基准
 
 推荐阅读顺序：
 
@@ -228,7 +259,7 @@ pairs-trading --config configs/petrochina_research.toml
 
 ### `signal_frame.csv`
 
-这是最关键的“策略输入中间表”。常见字段包括：
+这是最关键的策略输入中间表。常见字段包括：
 
 - `spread`
 - `zscore`
@@ -242,12 +273,28 @@ pairs-trading --config configs/petrochina_research.toml
 - `ecm_speed`
 - `ecm_p_value`
 - `ecm_gate_pass`
+- `ou_k`
+- `ou_L`
+- `ou_a`
+- `ou_beta`
+- `ou_half_life_days`
+- `ou_lb_pvalue`
+- `mean_reversion_gate_pass`
 - `a_open`
 - `h_open`
 - `a_adv`
 - `h_adv`
 
-当你怀疑“为什么这天没开仓/这天突然被强平”时，优先查这里。
+当你怀疑为什么这天没开仓或这天突然被强平时，优先查这里。
+
+### `ou_params.csv`
+
+启用滚动 OU 估计后，每天一组 OU MLE 参数。适合回答：
+
+- 半衰期是否长期落在可交易区间内
+- Ljung-Box p 值是否经常失效
+- 均值回归速度是否发生过 regime shift
+- 协整 `beta` 是否稳定
 
 ### `test_equity_curve.csv`
 
@@ -306,7 +353,7 @@ pairs-trading --config configs/petrochina_research.toml
 
 ## 6. 最重要的参数怎么选
 
-这一节不是“唯一正确答案”，而是一个可执行的默认框架。
+这一节给出一个可执行的默认框架，适合作为起点。
 
 ### `execution_mode`
 
@@ -335,7 +382,7 @@ next_open
 - 避免同一根 bar 又出信号又按同一根 bar 价格成交
 - 更接近日频研究里的基本现实性要求
 
-只有在你明确知道自己想研究“close-to-close 假设”时，才建议改成 `close`。
+只有在你明确想研究 close-to-close 假设时，才建议改成 `close`。
 
 ### `hedge_ratio_mode`
 
@@ -357,7 +404,7 @@ next_open
 
 默认从 `zscore` 开始。
 
-只有在你想测试“收益率价差平滑后的入场”时，再试：
+只有在你想测试收益率价差平滑后的入场时，再试：
 
 - `ret_spread_ema`
 - `ret_spread_sma`
@@ -418,7 +465,7 @@ significant_negative
 training
 ```
 
-它的用途不是“让模型更高级”，而是让两个关键参数更少拍脑袋：
+它的用途是让两个关键参数更少靠经验拍脑袋：
 
 - `z_window`
 - `max_holding_days`
@@ -446,7 +493,7 @@ training
 
 开始足够。
 
-如果你一开始就把阈值搜索开得很细，很容易把训练期噪音当成“优化结果”。
+如果你一开始就把阈值搜索开得很细，很容易把训练期噪音当成优化结果。
 
 ### `max_adv_fraction`
 
@@ -469,6 +516,40 @@ training
 
 但正式研究不建议长期关闭。
 
+### `mean_reversion_gate_mode`
+
+逐笔引擎的 OU 质量 gate，支持：
+
+- `off`
+- `half_life_range`
+- `lb_filter`
+- `both`
+
+推荐从 `off` 开始，先把核心均值回归信号跑通。如果发现半衰期经常落在不可交易区间，或 OU 创新项自相关明显，再逐步打开 `half_life_range`、`lb_filter` 和 `both`。注意这个 gate 需要滚动 OU 估计，打开后 `signal_frame.csv` 里会多出 `ou_*` 列。
+
+### `backtest_engine`
+
+默认用 `trade` 逐笔引擎。`weight` 权重引擎适合研究连续权重、波动率目标和换手成本。切换方法：
+
+```bash
+--backtest-engine weight
+```
+
+权重引擎会输出 `ou_params.csv` 和买入持有、常数混合基准，便于判断信号倾斜是否贡献了超额。
+
+### `position_sizing_mode`
+
+逐笔引擎默认 `fixed`，按 `--position-size-fraction` 固定比例开仓。`vol_target` 会按波动率目标缩放开仓规模，并用 `--max-leverage` 限制杠杆。权重引擎始终使用波动率目标仓位。
+
+### `max_drawdown` 与 `portfolio_max_drawdown`
+
+两套引擎都支持回撤熔断：
+
+- `--max-drawdown` 触发后暂停交易 `--suspend-days` 天
+- `--portfolio-max-drawdown` 触发后永久清仓
+
+设 `0` 可以关闭。建议正式研究里保留熔断，用压力测试观察熔断本身是否影响结论。
+
 ## 7. 成本模型该怎么用
 
 当前成本层分四类：
@@ -480,7 +561,7 @@ training
 
 ### 一个实用原则
 
-先接受“保守一点”，不要先追求“看起来收益更高”。
+先接受保守一点的假设，不要先追求看起来收益更高。
 
 ### 基础手续费
 
@@ -524,7 +605,7 @@ training
 2. borrow 翻倍
 3. borrow 翻倍且 financing 非零
 
-如果 paired 收益对 borrow 非常脆弱，就不要把它当成“稳定可执行”的结果。
+如果 paired 收益对 borrow 非常脆弱，就不要把它当成稳定可执行的结果。
 
 ## 8. Benchmark 怎么配
 
@@ -600,7 +681,7 @@ pairs-trading --config configs/petrochina_exploratory.toml
 - 正式结论
 - 直接把结果当成严格基线
 
-### 配方 C：对比“有没有 ECM gate”
+### 配方 C：对比有没有 ECM gate
 
 基线：
 
@@ -648,7 +729,7 @@ pairs-trading \
   --output-dir artifacts/runs/petrochina_rolling_hr
 ```
 
-重点不是只看谁收益高，而是看 rolling 版本是否真的更稳。
+重点要看 rolling 版本是否真的更稳。
 
 ### 配方 E：paired 压测
 
@@ -666,6 +747,43 @@ pairs-trading \
 适合检验：
 
 - paired 的收益是否只是建立在乐观 borrow 假设上
+
+### 配方 F：跑滚动 OU 权重引擎
+
+```bash
+pairs-trading \
+  --config configs/petrochina_research.toml \
+  --backtest-engine weight \
+  --mean-reversion-gate-mode both \
+  --position-sizing-mode vol_target \
+  --ou-window 126 \
+  --output-dir artifacts/runs/petrochina_weight_engine
+```
+
+适合检验：
+
+- 滚动 OU 半衰期和 Ljung-Box 是否稳定
+- 连续权重倾斜相对买入持有基准是否有超额
+- 波动率目标和回撤熔断对净值的影响
+
+### 配方 G：完全离线验证
+
+```bash
+pairs-trading \
+  --data-provider simulated \
+  --constant-fx-rate 0.92 \
+  --start-date 2018-01-01 \
+  --end-date 2021-12-31 \
+  --train-end-date 2020-12-31 \
+  --allow-non-coint \
+  --backtest-engine weight \
+  --output-dir artifacts/runs/simulated_weight
+```
+
+适合：
+
+- 在没有网络的环境验证完整链路
+- 写测试或复现 OU 估计行为
 
 ## 10. 配置文件怎么写
 
@@ -787,7 +905,7 @@ pairs-trading \
 - `effective_z_window`
 - `effective_max_holding_days`
 
-有时不是 half-life 本身有魔法，而是它把你的窗口和持有期改到了完全不同的量级。
+有时只是 half-life 把窗口和持有期改到了完全不同的量级，它本身并没有魔法。
 
 ## 13. 常见命令模板
 

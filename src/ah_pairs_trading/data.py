@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -11,6 +12,7 @@ import pandas as pd
 
 from .cache import atomic_json_dump, atomic_pickle_dump, build_cache_key, load_json, load_pickle
 from .config import BenchmarkMarket, DataConfig, PipelineConfig
+from .metrics import TRADING_DAYS_PER_YEAR
 
 _DATE_ALIASES = ("date", "日期", "datetime", "时间")
 _CLOSE_ALIASES = ("close", "收盘", "最新价", "price", "value")
@@ -154,6 +156,14 @@ def _missing_csv_error(path: str | Path, *, argument_name: str, hint: str) -> Fi
     )
 
 
+def _provider_display_name(provider: str) -> str:
+    if provider == "akshare":
+        return "AkShare"
+    if provider == "tushare":
+        return "Tushare"
+    return "simulated data"
+
+
 def _compact_date(date_str: str) -> str:
     return pd.Timestamp(date_str).strftime("%Y%m%d")
 
@@ -215,6 +225,220 @@ def fetch_h_share_history(symbol: str, start_date: str, end_date: str, adjust: s
         frame = ak.stock_hk_daily(symbol=symbol, adjust=adjust)
 
     result = _standardize_history_frame_allow_empty(frame)
+    return result.loc[start_date:end_date]
+
+
+def simulate_pair_prices(
+    start_date: str,
+    end_date: str,
+    *,
+    seed: int = 7,
+    mu_h: float = 0.08,
+    sigma_h: float = 0.22,
+    k: float = 20.0,
+    L: float = 0.0,
+    a: float = 0.05,
+    beta: float = 1.1,
+    rho: float = -0.25,
+    regime_shift_day: int | None = 900,
+    k2: float = 8.0,
+    a2: float = 0.07,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Generate deterministic simulated A/H histories with a known spread structure.
+
+    The independent leg follows a geometric Brownian motion and the spread
+    ``S = ln(A) - beta * ln(H)`` follows an Ornstein-Uhlenbeck process, so the
+    two legs are cointegrated by construction.  The fast default mean-reversion
+    keeps the rolling estimates stable on short windows.  A regime shift in the
+    OU parameters after ``regime_shift_day`` lets rolling MLE estimate the
+    change.  Returns normalized A and H history frames.
+    """
+
+    index = pd.bdate_range(start_date, end_date)
+    n_days = len(index)
+    dt = 1.0 / TRADING_DAYS_PER_YEAR
+    rng = np.random.default_rng(seed)
+
+    z1 = rng.standard_normal(n_days - 1)
+    z2_independent = rng.standard_normal(n_days - 1)
+    z2 = rho * z1 + np.sqrt(1 - rho**2) * z2_independent
+
+    lnH = np.empty(n_days)
+    lnH[0] = np.log(80.0)
+    for t in range(1, n_days):
+        lnH[t] = lnH[t - 1] + (mu_h - 0.5 * sigma_h**2) * dt + sigma_h * np.sqrt(dt) * z1[t - 1]
+
+    S = np.empty(n_days)
+    S[0] = 0.0
+    for t in range(1, n_days):
+        if regime_shift_day is not None and t >= regime_shift_day:
+            kk, aa = k2, a2
+        else:
+            kk, aa = k, a
+        phi = np.exp(-kk * dt)
+        sdS = aa * np.sqrt((1 - np.exp(-2 * kk * dt)) / (2 * kk))
+        S[t] = L + (S[t - 1] - L) * phi + sdS * z2[t - 1]
+
+    lnA = beta * lnH + S
+    a_close = np.exp(lnA)
+    h_close = np.exp(lnH)
+
+    def normalized_frame(close: np.ndarray) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "open": close,
+                "high": close * 1.01,
+                "low": close * 0.99,
+                "close": close,
+                "volume": np.full(n_days, 10_000_000.0),
+            },
+            index=index,
+        )
+
+    return normalized_frame(a_close), normalized_frame(h_close)
+
+
+def _simulation_params(simulation: DataConfig | None) -> dict[str, float | int | None]:
+    if simulation is None:
+        return {}
+    return {
+        "seed": simulation.simulation_seed,
+        "mu_h": simulation.simulation_mu_h,
+        "sigma_h": simulation.simulation_sigma_h,
+        "k": simulation.simulation_k,
+        "L": simulation.simulation_l,
+        "a": simulation.simulation_a,
+        "beta": simulation.simulation_beta,
+        "rho": simulation.simulation_rho,
+        "regime_shift_day": simulation.simulation_regime_shift_day,
+    }
+
+
+def fetch_simulated_a_history(
+    symbol: str,
+    start_date: str,
+    end_date: str,
+    adjust: str = "qfq",
+    simulation: DataConfig | None = None,
+) -> pd.DataFrame:
+    """Return the simulated A-share history for offline smoke testing."""
+
+    a_frame, _ = _simulated_pair_frames(simulation, start_date, end_date)
+    return a_frame
+
+
+def fetch_simulated_h_history(
+    symbol: str,
+    start_date: str,
+    end_date: str,
+    adjust: str = "qfq",
+    simulation: DataConfig | None = None,
+) -> pd.DataFrame:
+    """Return the simulated H-share history for offline smoke testing."""
+
+    _, h_frame = _simulated_pair_frames(simulation, start_date, end_date)
+    return h_frame
+
+
+_SIMULATED_PAIR_CACHE_DATA: dict[tuple, tuple[pd.DataFrame, pd.DataFrame]] = {}
+
+
+def _simulated_pair_frames(
+    simulation: DataConfig | None,
+    start_date: str,
+    end_date: str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Memoized simulated A/H pair so both legs share one generated history."""
+
+    params = _simulation_params(simulation)
+    key = (start_date, end_date, tuple(sorted(params.items())))
+    if key not in _SIMULATED_PAIR_CACHE_DATA:
+        _SIMULATED_PAIR_CACHE_DATA[key] = simulate_pair_prices(start_date, end_date, **params)
+    a_frame, h_frame = _SIMULATED_PAIR_CACHE_DATA[key]
+    return a_frame.loc[start_date:end_date].copy(), h_frame.loc[start_date:end_date].copy()
+
+
+def fetch_tushare_a_history(
+    symbol: str,
+    start_date: str,
+    end_date: str,
+    adjust: str = "qfq",
+    token: str | None = None,
+) -> pd.DataFrame:
+    """Fetch A-share history via Tushare and return a normalized frame."""
+
+    return _fetch_tushare_daily(symbol, start_date, end_date, adjust, token)
+
+
+def fetch_tushare_h_history(
+    symbol: str,
+    start_date: str,
+    end_date: str,
+    adjust: str = "qfq",
+    token: str | None = None,
+) -> pd.DataFrame:
+    """Fetch H-share history via Tushare and return a normalized frame."""
+
+    hk_symbol = symbol.zfill(5) + ".HK"
+    return _fetch_tushare_daily(hk_symbol, start_date, end_date, adjust, token)
+
+
+def _compact_tushare_date(date_str: str) -> str:
+    return pd.Timestamp(date_str).strftime("%Y%m%d")
+
+
+def _fetch_tushare_daily(
+    ts_code: str,
+    start_date: str,
+    end_date: str,
+    adjust: str | None,
+    token: str | None,
+) -> pd.DataFrame:
+    """Shared Tushare daily fetch normalized into open/high/low/close/volume columns."""
+
+    if not token:
+        raise RuntimeError(
+            "The tushare data provider requires a token. Set TUSHARE_TOKEN in the environment or pass "
+            "`--tushare-token`."
+        )
+    try:
+        import tushare as ts
+    except ImportError as exc:
+        raise RuntimeError("The tushare data provider requires the `tushare` package.") from exc
+
+    ts.set_token(token)
+    pro = ts.pro_api(token)
+
+    raw = None
+    if adjust and adjust not in {"none", "raw", "null", "off"}:
+        raw = ts.pro_bar(
+            ts_code=ts_code,
+            adj=adjust,
+            start_date=_compact_tushare_date(start_date),
+            end_date=_compact_tushare_date(end_date),
+            api=pro,
+        )
+    if raw is None or raw.empty:
+        raw = pro.daily(
+            ts_code=ts_code,
+            start_date=_compact_tushare_date(start_date),
+            end_date=_compact_tushare_date(end_date),
+        )
+    if raw is None or raw.empty:
+        return _empty_standardized_history_frame()
+
+    raw = raw.copy()
+    raw["trade_date"] = pd.to_datetime(raw["trade_date"], format="%Y%m%d")
+    raw = raw.sort_values("trade_date").set_index("trade_date")
+    result = pd.DataFrame(
+        {
+            "open": raw["open"].astype(float),
+            "high": raw["high"].astype(float),
+            "low": raw["low"].astype(float),
+            "close": raw["close"].astype(float),
+            "volume": raw.get("vol", pd.Series(np.nan, index=raw.index)).astype(float),
+        }
+    )
     return result.loc[start_date:end_date]
 
 
@@ -557,6 +781,11 @@ def prepare_signal_frame(
     ecm_speed: pd.Series | None = None,
     ecm_p_value: pd.Series | None = None,
     ecm_gate_pass: pd.Series | None = None,
+    ou_params: pd.DataFrame | None = None,
+    mean_reversion_gate_mode: str = "off",
+    half_life_min_days: float = 5.0,
+    half_life_max_days: float = 90.0,
+    lb_p_value_min: float = 0.05,
 ) -> pd.DataFrame:
     """Build rolling spread and z-score signals from A/H model prices."""
 
@@ -687,6 +916,17 @@ def prepare_signal_frame(
         signal_frame["ecm_p_value"] = _align_float_input(ecm_p_value, signal_frame.index, name="ecm_p_value")
     if ecm_gate_pass is not None:
         signal_frame["ecm_gate_pass"] = _align_boolean_input(ecm_gate_pass, signal_frame.index, name="ecm_gate_pass")
+    if ou_params is not None and not ou_params.empty:
+        from .ou import add_ou_diagnostics, mean_reversion_gate_pass_series
+
+        signal_frame = add_ou_diagnostics(signal_frame, ou_params)
+        signal_frame["mean_reversion_gate_pass"] = mean_reversion_gate_pass_series(
+            signal_frame,
+            mode=mean_reversion_gate_mode,
+            half_life_min_days=half_life_min_days,
+            half_life_max_days=half_life_max_days,
+            lb_p_value_min=lb_p_value_min,
+        )
     return signal_frame
 
 
@@ -719,19 +959,40 @@ def _fetch_benchmark_history(
     end_date: str,
     data_config: DataConfig,
 ) -> pd.DataFrame:
-    if benchmark_market == "a":
-        return fetch_a_share_history(
+    if data_config.data_provider == "akshare":
+        if benchmark_market == "a":
+            return fetch_a_share_history(
+                symbol=benchmark_symbol,
+                start_date=start_date,
+                end_date=end_date,
+                adjust=data_config.a_adjust,
+            )
+        return fetch_h_share_history(
             symbol=benchmark_symbol,
             start_date=start_date,
             end_date=end_date,
-            adjust=data_config.a_adjust,
+            adjust=data_config.h_adjust,
         )
-    return fetch_h_share_history(
-        symbol=benchmark_symbol,
-        start_date=start_date,
-        end_date=end_date,
-        adjust=data_config.h_adjust,
-    )
+    if data_config.data_provider == "tushare":
+        token = data_config.tushare_token or os.getenv("TUSHARE_TOKEN")
+        if benchmark_market == "a":
+            return fetch_tushare_a_history(
+                symbol=benchmark_symbol,
+                start_date=start_date,
+                end_date=end_date,
+                adjust=data_config.tushare_adjust,
+                token=token,
+            )
+        return fetch_tushare_h_history(
+            symbol=benchmark_symbol,
+            start_date=start_date,
+            end_date=end_date,
+            adjust=data_config.tushare_adjust,
+            token=token,
+        )
+    if benchmark_market == "a":
+        return fetch_simulated_a_history(benchmark_symbol, start_date, end_date, simulation=data_config)
+    return fetch_simulated_h_history(benchmark_symbol, start_date, end_date, simulation=data_config)
 
 
 def load_ah_pair_data(
@@ -742,59 +1003,98 @@ def load_ah_pair_data(
     fx_frame: pd.DataFrame | None = None,
     benchmark_frame: pd.DataFrame | None = None,
 ) -> LoadedPairData:
-    """Resolve A/H/FX inputs from frames, CSVs, or AkShare."""
+    """Resolve A/H/FX inputs from frames, CSVs, or an online/simulated provider."""
 
-    if config.data.data_provider != "akshare":
-        raise ValueError(f"Unsupported data provider '{config.data.data_provider}'.")
+    provider = config.data.data_provider
+    if provider == "akshare":
+        a_fetch = lambda start_date, end_date: fetch_a_share_history(
+            config.a_symbol, start_date, end_date, config.data.a_adjust
+        )
+        h_fetch = lambda start_date, end_date: fetch_h_share_history(
+            config.h_symbol, start_date, end_date, config.data.h_adjust
+        )
+        a_identity = {"provider": provider, "symbol": config.a_symbol, "adjust": config.data.a_adjust}
+        h_identity = {"provider": provider, "symbol": config.h_symbol, "adjust": config.data.h_adjust}
+        fx_identity: dict[str, str | float | None] = {"provider": provider, "symbol": config.data.fx_symbol}
+    elif provider == "tushare":
+        token = config.data.tushare_token or os.getenv("TUSHARE_TOKEN")
+        a_fetch = lambda start_date, end_date: fetch_tushare_a_history(
+            config.a_symbol, start_date, end_date, config.data.tushare_adjust, token
+        )
+        h_fetch = lambda start_date, end_date: fetch_tushare_h_history(
+            config.h_symbol, start_date, end_date, config.data.tushare_adjust, token
+        )
+        a_identity = {"provider": provider, "symbol": config.a_symbol, "adjust": config.data.tushare_adjust}
+        h_identity = {"provider": provider, "symbol": config.h_symbol, "adjust": config.data.tushare_adjust}
+        fx_identity = {"provider": provider, "symbol": config.data.fx_symbol}
+    elif provider == "simulated":
+        a_fetch = lambda start_date, end_date: fetch_simulated_a_history(
+            config.a_symbol, start_date, end_date, simulation=config.data
+        )
+        h_fetch = lambda start_date, end_date: fetch_simulated_h_history(
+            config.h_symbol, start_date, end_date, simulation=config.data
+        )
+        a_identity = {
+            "provider": provider,
+            "symbol": config.a_symbol,
+            "adjust": "simulated",
+            "seed": config.data.simulation_seed,
+            "k": config.data.simulation_k,
+            "a": config.data.simulation_a,
+            "beta": config.data.simulation_beta,
+        }
+        h_identity = {
+            "provider": provider,
+            "symbol": config.h_symbol,
+            "adjust": "simulated",
+            "seed": config.data.simulation_seed,
+            "k": config.data.simulation_k,
+            "a": config.data.simulation_a,
+            "beta": config.data.simulation_beta,
+        }
+        fx_identity = {"provider": provider, "symbol": config.data.fx_symbol}
+        if (
+            fx_frame is None
+            and config.data.fx_csv_path is None
+            and config.data.constant_fx_rate is None
+        ):
+            fx_frame = pd.DataFrame(
+                {"fx_rate": 0.92},
+                index=pd.date_range(config.start_date, config.end_date, freq="B"),
+            )
+    else:
+        raise ValueError(f"Unsupported data provider '{provider}'. Choose from akshare, tushare, or simulated.")
 
     resolved_a = _resolve_frame(
         a_frame,
         config.data.a_csv_path,
-        lambda start_date, end_date: fetch_a_share_history(
-            config.a_symbol,
-            start_date,
-            end_date,
-            config.data.a_adjust,
-        ),
+        a_fetch,
         csv_argument_name="--a-csv",
         missing_file_hint=(
-            "Remove `--a-csv` to let the CLI load the A-share history from AkShare and the local data cache "
-            "instead."
+            f"Remove `--a-csv` to let the CLI load the A-share history from {_provider_display_name(provider)} "
+            "and the local data cache instead."
         ),
         request_start=config.start_date,
         request_end=config.end_date,
         cache_dir=config.cache_dir,
         cache_namespace="a_share_history",
-        cache_identity={
-            "provider": config.data.data_provider,
-            "symbol": config.a_symbol,
-            "adjust": config.data.a_adjust,
-        },
+        cache_identity=a_identity,
         refresh_cache=config.refresh_cache,
     )
     resolved_h = _resolve_frame(
         h_frame,
         config.data.h_csv_path,
-        lambda start_date, end_date: fetch_h_share_history(
-            config.h_symbol,
-            start_date,
-            end_date,
-            config.data.h_adjust,
-        ),
+        h_fetch,
         csv_argument_name="--h-csv",
         missing_file_hint=(
-            "Remove `--h-csv` to let the CLI load the H-share history from AkShare and the local data cache "
-            "instead."
+            f"Remove `--h-csv` to let the CLI load the H-share history from {_provider_display_name(provider)} "
+            "and the local data cache instead."
         ),
         request_start=config.start_date,
         request_end=config.end_date,
         cache_dir=config.cache_dir,
         cache_namespace="h_share_history",
-        cache_identity={
-            "provider": config.data.data_provider,
-            "symbol": config.h_symbol,
-            "adjust": config.data.h_adjust,
-        },
+        cache_identity=h_identity,
         refresh_cache=config.refresh_cache,
     )
     resolved_fx = _resolve_fx_frame(fx_frame, config.data, config.start_date, config.end_date)

@@ -100,6 +100,103 @@ class BacktestResult:
     summary: BacktestSummary
 
 
+def build_backtest_summary(
+    equity_curve: pd.DataFrame,
+    trade_frame: pd.DataFrame,
+    initial_capital: float,
+    *,
+    total_costs: float = 0.0,
+    transaction_costs: float = 0.0,
+    slippage_costs: float = 0.0,
+    borrow_costs: float = 0.0,
+    financing_costs: float = 0.0,
+) -> BacktestSummary:
+    """Build a ``BacktestSummary`` from an equity curve and trade frame.
+
+    Shared by both backtest engines so their reported metrics stay consistent.
+    """
+
+    if equity_curve.empty:
+        raise ValueError("Cannot build a backtest summary from an empty equity curve.")
+
+    final_capital = float(equity_curve["capital"].iloc[-1])
+    total_return = final_capital / initial_capital - 1.0
+    annual_return = annualize_total_return(total_return, len(equity_curve))
+    annual_volatility = compute_annualized_volatility(equity_curve["returns"])
+    sharpe_ratio = compute_sharpe_ratio(equity_curve["returns"])
+    sortino_ratio = compute_sortino_ratio(equity_curve["returns"])
+    drawdown_stats = compute_drawdown_stats(equity_curve["capital"])
+    calmar_ratio = None
+    if drawdown_stats.max_drawdown < 0:
+        calmar_ratio = float(annual_return / abs(drawdown_stats.max_drawdown))
+
+    win_rate = 0.0
+    avg_holding_days = 0.0
+    payoff_ratio: float | None = None
+    profit_factor: float | None = None
+    avg_trade_pnl: float | None = None
+    avg_win_pnl: float | None = None
+    avg_loss_pnl: float | None = None
+    gross_pnl = 0.0
+    cost_to_gross_pnl: float | None = None
+    if not trade_frame.empty:
+        win_rate = float((trade_frame["net_pnl"] > 0).mean())
+        avg_holding_days = float(trade_frame["holding_days"].mean())
+        avg_trade_pnl = float(trade_frame["net_pnl"].mean())
+        gross_pnl = float(trade_frame["gross_pnl"].sum())
+
+        winning_trades = trade_frame.loc[trade_frame["net_pnl"] > 0, "net_pnl"]
+        losing_trades = trade_frame.loc[trade_frame["net_pnl"] < 0, "net_pnl"]
+        if not winning_trades.empty:
+            avg_win_pnl = float(winning_trades.mean())
+        if not losing_trades.empty:
+            avg_loss_pnl = float(losing_trades.mean())
+        if avg_win_pnl is not None and avg_loss_pnl is not None and avg_loss_pnl != 0:
+            payoff_ratio = float(avg_win_pnl / abs(avg_loss_pnl))
+        if not winning_trades.empty and not losing_trades.empty:
+            gross_wins = float(winning_trades.sum())
+            gross_losses = float(losing_trades.sum())
+            if gross_losses != 0:
+                profit_factor = float(gross_wins / abs(gross_losses))
+        if gross_pnl != 0:
+            cost_to_gross_pnl = float(total_costs / abs(gross_pnl))
+
+    time_in_market = float((equity_curve["position"] != "flat").mean()) if "position" in equity_curve.columns else 0.0
+    net_pnl = float(final_capital - initial_capital)
+
+    return BacktestSummary(
+        final_capital=final_capital,
+        total_return=float(total_return),
+        annual_return=annual_return,
+        annual_volatility=annual_volatility,
+        sharpe_ratio=sharpe_ratio,
+        sortino_ratio=sortino_ratio,
+        max_drawdown=drawdown_stats.max_drawdown,
+        calmar_ratio=calmar_ratio,
+        max_drawdown_duration=drawdown_stats.max_drawdown_duration,
+        recovery_days=drawdown_stats.recovery_days,
+        trade_count=int(len(trade_frame)),
+        win_rate=win_rate,
+        payoff_ratio=payoff_ratio,
+        profit_factor=profit_factor,
+        avg_trade_pnl=avg_trade_pnl,
+        avg_holding_days=avg_holding_days,
+        avg_win_pnl=avg_win_pnl,
+        avg_loss_pnl=avg_loss_pnl,
+        gross_pnl=gross_pnl,
+        net_pnl=net_pnl,
+        total_costs=float(total_costs),
+        transaction_costs=float(transaction_costs),
+        slippage_costs=float(slippage_costs),
+        borrow_costs=float(borrow_costs),
+        financing_costs=float(financing_costs),
+        cost_to_gross_pnl=cost_to_gross_pnl,
+        time_in_market=time_in_market,
+        max_consecutive_losses=compute_max_consecutive_losses(trade_frame),
+        monthly_win_rate=compute_monthly_win_rate(equity_curve["returns"]),
+    )
+
+
 @dataclass(slots=True)
 class PositionState:
     """The currently open A/H relative-value position."""
@@ -258,8 +355,9 @@ def _build_position(
     hedge_ratio: float,
     strategy_config: StrategyConfig,
     cost_config: CostConfig,
+    leverage: float = 1.0,
 ) -> PositionState | None:
-    gross_budget = capital * strategy_config.position_size_fraction
+    gross_budget = capital * strategy_config.position_size_fraction * max(float(leverage), 0.0)
     if gross_budget <= 0:
         return None
 
@@ -454,6 +552,36 @@ def _ecm_gate_column(strategy_config: StrategyConfig) -> str | None:
     return "ecm_gate_pass"
 
 
+def _mean_reversion_gate_column(strategy_config: StrategyConfig) -> str | None:
+    if strategy_config.mean_reversion_gate_mode == "off":
+        return None
+    return "mean_reversion_gate_pass"
+
+
+def _entry_leverage(capital_history: list[float], strategy_config: StrategyConfig) -> float:
+    """Volatility-targeting leverage factor for the trade engine.
+
+    With ``position_sizing_mode='vol_target'`` the entry budget is scaled by
+    ``target_vol`` divided by the trailing annualized volatility of realized
+    equity returns, capped at ``max_leverage``.
+    """
+
+    if strategy_config.position_sizing_mode != "vol_target":
+        return 1.0
+    if len(capital_history) < 2:
+        return 1.0
+    capital = np.asarray(capital_history, dtype=float)
+    returns = capital[1:] / capital[:-1] - 1.0
+    window = max(int(strategy_config.vol_window), 2)
+    minimum_periods = strategy_config.vol_min_periods or window
+    if len(returns) < minimum_periods:
+        return 1.0
+    vol = float(np.std(returns[-window:])) * np.sqrt(TRADING_DAYS_PER_YEAR)
+    if not np.isfinite(vol) or vol <= 1e-12:
+        return 1.0
+    return float(np.clip(strategy_config.target_vol / vol, 0.0, strategy_config.max_leverage))
+
+
 def _passes_return_filter(row: pd.Series, strategy_config: StrategyConfig) -> bool:
     filter_column = _return_filter_pass_column(strategy_config)
     if filter_column is None:
@@ -478,6 +606,17 @@ def _passes_cointegration_gate(row: pd.Series, strategy_config: StrategyConfig) 
 
 def _passes_ecm_gate(row: pd.Series, strategy_config: StrategyConfig) -> bool:
     gate_column = _ecm_gate_column(strategy_config)
+    if gate_column is None:
+        return True
+
+    gate_value = row.get(gate_column, pd.NA)
+    if pd.isna(gate_value):
+        return False
+    return bool(gate_value)
+
+
+def _passes_mean_reversion_gate(row: pd.Series, strategy_config: StrategyConfig) -> bool:
+    gate_column = _mean_reversion_gate_column(strategy_config)
     if gate_column is None:
         return True
 
@@ -538,6 +677,13 @@ def backtest_relative_value_strategy(
             f"The signal frame is missing '{ecm_gate_column}' required by ecm_gate_mode="
             f"'{strategy_config.ecm_gate_mode}'."
         )
+    mean_reversion_gate_column = _mean_reversion_gate_column(strategy_config)
+    if mean_reversion_gate_column is not None and mean_reversion_gate_column not in signal_frame.columns:
+        raise ValueError(
+            f"The signal frame is missing '{mean_reversion_gate_column}' required by "
+            f"mean_reversion_gate_mode='{strategy_config.mean_reversion_gate_mode}'. "
+            "The rolling OU estimator must be enabled so the gate can be computed."
+        )
 
     open_position: PositionState | None = None
     realized_pnl = 0.0
@@ -549,6 +695,11 @@ def backtest_relative_value_strategy(
     equity_rows: list[dict[str, Any]] = []
     trade_rows: list[dict[str, Any]] = []
     last_row_index = len(signal_frame) - 1
+
+    peak_capital = strategy_config.initial_capital
+    suspend_left = 0
+    hard_cut = False
+    capital_history: list[float] = []
 
     for row_number, (date, row) in enumerate(signal_frame.iterrows()):
         a_close = float(row[a_symbol])
@@ -597,6 +748,11 @@ def backtest_relative_value_strategy(
             if ecm_gate_column is not None and pd.notna(row.get(ecm_gate_column))
             else pd.NA
         )
+        mean_reversion_gate_pass = (
+            bool(row[mean_reversion_gate_column])
+            if mean_reversion_gate_column is not None and pd.notna(row.get(mean_reversion_gate_column))
+            else pd.NA
+        )
         decision_row: pd.Series | None
         execution_a_price: float
         execution_h_price: float
@@ -617,9 +773,17 @@ def backtest_relative_value_strategy(
                 float(decision_row[signal_column]) if pd.notna(decision_row.get(signal_column)) else np.nan
             )
             decision_hedge_ratio = _effective_hedge_ratio(decision_row, hedge_ratio)
-            decision_gate_allows_trading = _passes_cointegration_gate(decision_row, strategy_config) and _passes_ecm_gate(
-                decision_row, strategy_config
+            decision_gate_allows_trading = (
+                _passes_cointegration_gate(decision_row, strategy_config)
+                and _passes_ecm_gate(decision_row, strategy_config)
+                and _passes_mean_reversion_gate(decision_row, strategy_config)
             )
+
+        forced_exit_reason: str | None = None
+        if hard_cut:
+            forced_exit_reason = "drawdown_cut"
+        elif suspend_left > 0:
+            forced_exit_reason = "drawdown_suspend"
 
         unrealized_pnl = 0.0
         closed_this_bar = False
@@ -630,12 +794,14 @@ def backtest_relative_value_strategy(
 
         if open_position is not None:
             holding_days = row_number - open_position.entry_row_number
-            exit_reason: str | None = None
+            exit_reason: str | None = forced_exit_reason
             if decision_row is not None:
                 if not _passes_cointegration_gate(decision_row, strategy_config):
                     exit_reason = "cointegration_breakdown"
                 elif not _passes_ecm_gate(decision_row, strategy_config):
                     exit_reason = "ecm_breakdown"
+                elif not _passes_mean_reversion_gate(decision_row, strategy_config):
+                    exit_reason = "mean_reversion_breakdown"
                 elif pd.notna(decision_signal_value) and abs(decision_signal_value) <= strategy_config.exit_z:
                     exit_reason = "mean_reversion"
                 elif pd.notna(decision_signal_value) and abs(decision_signal_value) >= strategy_config.stop_z:
@@ -708,7 +874,10 @@ def backtest_relative_value_strategy(
             and abs(decision_signal_value) >= min(strategy_config.entry_z_candidates)
             and decision_gate_allows_trading
             and _passes_return_filter(decision_row, strategy_config)
+            and suspend_left == 0
+            and not hard_cut
         ):
+            entry_leverage = _entry_leverage(capital_history, strategy_config)
             candidate = _build_position(
                 date=date,
                 row_number=row_number,
@@ -721,6 +890,7 @@ def backtest_relative_value_strategy(
                 hedge_ratio=decision_hedge_ratio,
                 strategy_config=strategy_config,
                 cost_config=cost_config,
+                leverage=entry_leverage,
             )
             if candidate is not None:
                 open_position = candidate
@@ -808,6 +978,7 @@ def backtest_relative_value_strategy(
                 "ecm_speed": ecm_speed,
                 "ecm_p_value": ecm_p_value,
                 "ecm_gate_pass": ecm_gate_pass,
+                "mean_reversion_gate_pass": mean_reversion_gate_pass,
                 "a_adv": a_adv,
                 "h_adv": h_adv,
                 "daily_transaction_cost": daily_transaction_cost,
@@ -818,6 +989,17 @@ def backtest_relative_value_strategy(
                 "gross_exposure": 0.0 if open_position is None else _gross_exposure(open_position, a_close, h_close),
             }
         )
+
+        capital_history.append(float(capital))
+        if strategy_config.max_drawdown > 0 or strategy_config.portfolio_max_drawdown > 0:
+            peak_capital = max(peak_capital, capital)
+            current_drawdown = capital / peak_capital - 1.0
+            if strategy_config.portfolio_max_drawdown > 0 and current_drawdown <= -abs(strategy_config.portfolio_max_drawdown):
+                hard_cut = True
+            if strategy_config.max_drawdown > 0 and current_drawdown <= -abs(strategy_config.max_drawdown) and suspend_left == 0 and not hard_cut:
+                suspend_left = max(int(strategy_config.suspend_days), 0)
+        if suspend_left > 0:
+            suspend_left -= 1
 
     equity_curve = pd.DataFrame(equity_rows).set_index("date")
     equity_curve["returns"] = equity_curve["capital"].pct_change().fillna(0.0)
@@ -853,80 +1035,17 @@ def backtest_relative_value_strategy(
     )
 
     final_capital = float(equity_curve["capital"].iloc[-1])
-    total_return = final_capital / strategy_config.initial_capital - 1.0
-    annual_return = annualize_total_return(total_return, len(equity_curve))
-    annual_volatility = compute_annualized_volatility(equity_curve["returns"])
-    sharpe_ratio = compute_sharpe_ratio(equity_curve["returns"])
-    sortino_ratio = compute_sortino_ratio(equity_curve["returns"])
-    drawdown_stats = compute_drawdown_stats(equity_curve["capital"])
-    calmar_ratio = None
-    if drawdown_stats.max_drawdown < 0:
-        calmar_ratio = float(annual_return / abs(drawdown_stats.max_drawdown))
-
-    win_rate = 0.0
-    avg_holding_days = 0.0
-    payoff_ratio: float | None = None
-    profit_factor: float | None = None
-    avg_trade_pnl: float | None = None
-    avg_win_pnl: float | None = None
-    avg_loss_pnl: float | None = None
-    gross_pnl = 0.0
-    cost_to_gross_pnl: float | None = None
-    if not trade_frame.empty:
-        win_rate = float((trade_frame["net_pnl"] > 0).mean())
-        avg_holding_days = float(trade_frame["holding_days"].mean())
-        avg_trade_pnl = float(trade_frame["net_pnl"].mean())
-        gross_pnl = float(trade_frame["gross_pnl"].sum())
-
-        winning_trades = trade_frame.loc[trade_frame["net_pnl"] > 0, "net_pnl"]
-        losing_trades = trade_frame.loc[trade_frame["net_pnl"] < 0, "net_pnl"]
-        if not winning_trades.empty:
-            avg_win_pnl = float(winning_trades.mean())
-        if not losing_trades.empty:
-            avg_loss_pnl = float(losing_trades.mean())
-        if avg_win_pnl is not None and avg_loss_pnl is not None and avg_loss_pnl != 0:
-            payoff_ratio = float(avg_win_pnl / abs(avg_loss_pnl))
-        if not winning_trades.empty and not losing_trades.empty:
-            gross_wins = float(winning_trades.sum())
-            gross_losses = float(losing_trades.sum())
-            if gross_losses != 0:
-                profit_factor = float(gross_wins / abs(gross_losses))
-        if gross_pnl != 0:
-            cost_to_gross_pnl = float(total_costs / abs(gross_pnl))
-
-    time_in_market = float((equity_curve["position"] != "flat").mean())
     net_pnl = float(final_capital - strategy_config.initial_capital)
 
-    summary = BacktestSummary(
-        final_capital=final_capital,
-        total_return=float(total_return),
-        annual_return=annual_return,
-        annual_volatility=annual_volatility,
-        sharpe_ratio=sharpe_ratio,
-        sortino_ratio=sortino_ratio,
-        max_drawdown=drawdown_stats.max_drawdown,
-        calmar_ratio=calmar_ratio,
-        max_drawdown_duration=drawdown_stats.max_drawdown_duration,
-        recovery_days=drawdown_stats.recovery_days,
-        trade_count=int(len(trade_frame)),
-        win_rate=win_rate,
-        payoff_ratio=payoff_ratio,
-        profit_factor=profit_factor,
-        avg_trade_pnl=avg_trade_pnl,
-        avg_holding_days=avg_holding_days,
-        avg_win_pnl=avg_win_pnl,
-        avg_loss_pnl=avg_loss_pnl,
-        gross_pnl=gross_pnl,
-        net_pnl=net_pnl,
+    summary = build_backtest_summary(
+        equity_curve,
+        trade_frame,
+        strategy_config.initial_capital,
         total_costs=float(total_costs),
         transaction_costs=float(transaction_costs),
         slippage_costs=float(slippage_costs),
         borrow_costs=float(borrow_costs),
         financing_costs=float(financing_costs),
-        cost_to_gross_pnl=cost_to_gross_pnl,
-        time_in_market=time_in_market,
-        max_consecutive_losses=compute_max_consecutive_losses(trade_frame),
-        monthly_win_rate=compute_monthly_win_rate(equity_curve["returns"]),
     )
     return BacktestResult(equity_curve=equity_curve, trades=trade_frame, summary=summary)
 

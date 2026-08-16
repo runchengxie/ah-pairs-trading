@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 import warnings
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -36,11 +36,14 @@ from .data import (
     split_train_test,
 )
 from .metrics import prepare_comparison_frame, rolling_beta, rolling_sharpe, summarize_benchmark
+from .ou import add_ou_diagnostics, ou_params_to_dict, rolling_ou_mle_params
 from .plotting import (
     plot_cumulative_returns,
     plot_equity_curve,
     plot_excess_returns,
     plot_log_prices,
+    plot_nav_benchmarks,
+    plot_ou_params,
     plot_rolling_beta,
     plot_rolling_cointegration,
     plot_rolling_sharpe,
@@ -48,6 +51,11 @@ from .plotting import (
 )
 from .pairs import validate_same_issuer_pair
 from .strategy import BacktestResult, backtest_relative_value_strategy, grid_search_entry_z
+from .weight_strategy import (
+    backtest_spread_arbitrage_strategy,
+    grid_search_entry_z_weight,
+    run_weight_benchmarks,
+)
 
 
 @dataclass(slots=True)
@@ -80,9 +88,11 @@ class PipelineResult:
     benchmark_comparison: pd.DataFrame
     rolling_sharpe: pd.Series
     rolling_beta: pd.Series
+    ou_params: pd.DataFrame = field(default_factory=pd.DataFrame)
+    weight_benchmarks: dict[str, pd.DataFrame] | None = None
 
 
-_PIPELINE_CACHE_VERSION = 4
+_PIPELINE_CACHE_VERSION = 5
 
 
 def _cointegration_to_dict(result: CointegrationResult) -> dict[str, Any]:
@@ -395,6 +405,7 @@ def build_pipeline_summary(config: PipelineConfig, result: PipelineResult) -> di
             "train_end_date": config.train_end_date,
             "require_significant_cointegration": config.require_significant_cointegration,
             "output_dir": str(config.output_dir) if config.output_dir is not None else None,
+            "data_provider": config.data.data_provider,
         },
         "instrument_meta": {
             "a_symbol": config.a_symbol,
@@ -439,6 +450,19 @@ def build_pipeline_summary(config: PipelineConfig, result: PipelineResult) -> di
             "benchmark_mode": config.benchmark_mode,
             "internal_benchmark_weighting": config.internal_benchmark_weighting,
             "same_issuer_check": config.same_issuer_check,
+            "backtest_engine": effective_strategy.backtest_engine,
+            "mean_reversion_gate_mode": effective_strategy.mean_reversion_gate_mode,
+            "half_life_min_days": effective_strategy.half_life_min_days,
+            "half_life_max_days": effective_strategy.half_life_max_days,
+            "lb_p_value_min": effective_strategy.lb_p_value_min,
+            "min_weight": effective_strategy.min_weight,
+            "position_sizing_mode": effective_strategy.position_sizing_mode,
+            "target_vol": effective_strategy.target_vol,
+            "vol_window": effective_strategy.vol_window,
+            "max_leverage": effective_strategy.max_leverage,
+            "max_drawdown": effective_strategy.max_drawdown,
+            "suspend_days": effective_strategy.suspend_days,
+            "portfolio_max_drawdown": effective_strategy.portfolio_max_drawdown,
         },
         "cost_assumptions": {
             "a_buy_cost_bps": config.costs.a_buy_cost_bps,
@@ -480,6 +504,7 @@ def build_pipeline_summary(config: PipelineConfig, result: PipelineResult) -> di
             "training_mean_reversion": _mean_reversion_to_dict(result.training_mean_reversion),
             "matrix_ols": _matrix_ols_to_dict(result.matrix_ols),
             "var_diagnostics": _var_diagnostics_to_dict(result.var_diagnostics),
+            "ou_params": ou_params_to_dict(result.ou_params) if not result.ou_params.empty else None,
         },
     }
 
@@ -586,6 +611,7 @@ def render_pipeline_scorecard(summary: dict[str, Any]) -> str:
     lines = [
         "Run Overview",
         f"- Pair: {instrument_meta['a_symbol']} / {instrument_meta['h_symbol']}",
+        f"- Data provider: {run_meta['data_provider']}",
         f"- Pair validation: {pair_validation['status']}",
         (
             f"- Registered issuer: {pair_validation['issuer_name']}"
@@ -594,6 +620,7 @@ def render_pipeline_scorecard(summary: dict[str, Any]) -> str:
         ),
         f"- Window: {run_meta['start_date']} to {run_meta['end_date']}",
         f"- Train/Test split: train <= {run_meta['train_end_date']}, test > {run_meta['train_end_date']}",
+        f"- Backtest engine: {strategy_params['backtest_engine']}",
         f"- Execution mode: {strategy_params['execution_mode']}",
         f"- Execution timing: {strategy_params['execution_timing']}",
         f"- Best entry z-score: {_format_float(strategy_params['best_entry_z'], digits=2)}",
@@ -603,6 +630,8 @@ def render_pipeline_scorecard(summary: dict[str, Any]) -> str:
         f"- Return filter: {_return_filter_label(strategy_params)}",
         f"- Cointegration gate: {strategy_params['cointegration_gate_mode']}",
         f"- ECM gate: {strategy_params['ecm_gate_mode']}",
+        f"- Mean-reversion gate: {strategy_params['mean_reversion_gate_mode']}",
+        f"- Position sizing: {strategy_params['position_sizing_mode']}",
         f"- ADV cap: {_format_percent(strategy_params['max_adv_fraction']) if strategy_params['max_adv_fraction'] is not None else 'off'}",
         f"- Effective z-window: {strategy_params['z_window']} (configured {strategy_params['configured_z_window']})",
         f"- Effective max holding: {strategy_params['max_holding_days']} days (configured {strategy_params['configured_max_holding_days']})",
@@ -659,6 +688,20 @@ def render_pipeline_scorecard(summary: dict[str, Any]) -> str:
             ),
         ]
     )
+    ou_params = diagnostics.get("ou_params")
+    if ou_params is not None and int(ou_params.get("observations", 0)) > 0:
+        lines.extend(
+            [
+                "",
+                "Rolling OU MLE",
+                f"- Observations: {ou_params['observations']}",
+                f"- Mean half-life: {_format_float(ou_params['mean_half_life_days'], digits=2)} days",
+                f"- Mean k: {_format_float(ou_params['mean_k'], digits=4)}",
+                f"- Mean Ljung-Box p-value: {_format_float(ou_params['mean_lb_pvalue'], digits=3)}",
+                f"- Last beta: {_format_float(ou_params['last_beta'], digits=4)}",
+                f"- Last half-life: {_format_float(ou_params['last_half_life_days'], digits=2)} days",
+            ]
+        )
     return "\n".join(lines)
 
 
@@ -741,6 +784,18 @@ def _save_outputs(config: PipelineConfig, result: PipelineResult) -> None:
             result.rolling_beta,
             benchmark_label=benchmark_label,
             output_path=output_dir / "test_rolling_beta.png",
+        )
+    if not result.ou_params.empty:
+        _save_dataframe(result.ou_params, output_dir / "ou_params.csv")
+        plot_ou_params(result.ou_params, output_path=output_dir / "ou_params.png")
+    if result.weight_benchmarks is not None:
+        for name, frame in result.weight_benchmarks.items():
+            _save_dataframe(frame, output_dir / f"test_{name}.csv")
+        plot_nav_benchmarks(
+            result.test_backtest.equity_curve,
+            result.weight_benchmarks,
+            title="Test NAV vs Weight-Engine Benchmarks",
+            output_path=output_dir / "test_weight_nav_vs_benchmarks.png",
         )
 
 
@@ -920,6 +975,33 @@ def run_ah_relative_value_pipeline(
             alpha=config.alpha,
         ),
     )
+    ou_needed = config.strategy.backtest_engine == "weight" or config.strategy.mean_reversion_gate_mode != "off"
+    ou_params = pd.DataFrame()
+    if ou_needed:
+        ou_params = stage_cache.load_or_compute(
+            "ou_params",
+            {
+                "version": _PIPELINE_CACHE_VERSION,
+                "log_prices_digest": log_prices_digest,
+                "dependent_symbol": config.a_symbol,
+                "independent_symbol": config.h_symbol,
+                "window": config.strategy.ou_window,
+                "det_order": config.strategy.ou_det_order,
+                "k_ar_diff": config.strategy.ou_k_ar_diff,
+                "lags": config.strategy.ou_lags,
+            },
+            lambda: rolling_ou_mle_params(
+                log_prices,
+                dependent_symbol=config.a_symbol,
+                independent_symbol=config.h_symbol,
+                window=config.strategy.ou_window,
+                det_order=config.strategy.ou_det_order,
+                k_ar_diff=config.strategy.ou_k_ar_diff,
+                lags=config.strategy.ou_lags,
+            ),
+        )
+    ou_digest = frame_digest(ou_params) if not ou_params.empty else None
+
     (
         signal_intercept,
         signal_hedge_ratio,
@@ -988,6 +1070,11 @@ def run_ah_relative_value_pipeline(
             "return_filter_min_periods": effective_strategy.return_filter_min_periods,
             "adv_window": effective_strategy.adv_window,
             "adv_min_periods": effective_strategy.adv_min_periods,
+            "ou_digest": ou_digest,
+            "mean_reversion_gate_mode": effective_strategy.mean_reversion_gate_mode,
+            "half_life_min_days": effective_strategy.half_life_min_days,
+            "half_life_max_days": effective_strategy.half_life_max_days,
+            "lb_p_value_min": effective_strategy.lb_p_value_min,
         },
         lambda: prepare_signal_frame(
             prices,
@@ -1006,12 +1093,22 @@ def run_ah_relative_value_pipeline(
             ecm_speed=signal_ecm_speed,
             ecm_p_value=signal_ecm_p_value,
             ecm_gate_pass=signal_ecm_gate_pass,
+            ou_params=ou_params if ou_needed else None,
+            mean_reversion_gate_mode=effective_strategy.mean_reversion_gate_mode,
+            half_life_min_days=effective_strategy.half_life_min_days,
+            half_life_max_days=effective_strategy.half_life_max_days,
+            lb_p_value_min=effective_strategy.lb_p_value_min,
         ),
     )
     train_signal_frame, test_signal_frame = split_train_test(signal_frame, config.train_end_date)
     train_signal_frame_digest = frame_digest(train_signal_frame)
     test_signal_frame_digest = frame_digest(test_signal_frame)
 
+    grid_search_fn = (
+        grid_search_entry_z_weight
+        if config.strategy.backtest_engine == "weight"
+        else grid_search_entry_z
+    )
     best_entry_z, train_grid_search = stage_cache.load_or_compute(
         "train_grid_search",
         {
@@ -1022,8 +1119,9 @@ def run_ah_relative_value_pipeline(
             "hedge_ratio": training_cointegration.hedge_ratio,
             "strategy_config": effective_strategy,
             "cost_config": config.costs,
+            "backtest_engine": config.strategy.backtest_engine,
         },
-        lambda: grid_search_entry_z(
+        lambda: grid_search_fn(
             signal_frame=train_signal_frame,
             a_symbol=config.a_symbol,
             h_symbol=config.h_symbol,
@@ -1034,6 +1132,11 @@ def run_ah_relative_value_pipeline(
     )
     selected_strategy = _strategy_with_entry_z(effective_strategy, best_entry_z)
 
+    backtest_fn = (
+        backtest_spread_arbitrage_strategy
+        if config.strategy.backtest_engine == "weight"
+        else backtest_relative_value_strategy
+    )
     train_backtest = stage_cache.load_or_compute(
         "train_backtest",
         {
@@ -1044,8 +1147,9 @@ def run_ah_relative_value_pipeline(
             "hedge_ratio": training_cointegration.hedge_ratio,
             "strategy_config": selected_strategy,
             "cost_config": config.costs,
+            "backtest_engine": config.strategy.backtest_engine,
         },
-        lambda: backtest_relative_value_strategy(
+        lambda: backtest_fn(
             signal_frame=train_signal_frame,
             a_symbol=config.a_symbol,
             h_symbol=config.h_symbol,
@@ -1064,8 +1168,9 @@ def run_ah_relative_value_pipeline(
             "hedge_ratio": training_cointegration.hedge_ratio,
             "strategy_config": selected_strategy,
             "cost_config": config.costs,
+            "backtest_engine": config.strategy.backtest_engine,
         },
-        lambda: backtest_relative_value_strategy(
+        lambda: backtest_fn(
             signal_frame=test_signal_frame,
             a_symbol=config.a_symbol,
             h_symbol=config.h_symbol,
@@ -1129,6 +1234,16 @@ def run_ah_relative_value_pipeline(
         ),
     )
 
+    weight_benchmarks = None
+    if config.strategy.backtest_engine == "weight" and not test_signal_frame.empty:
+        weight_benchmarks = run_weight_benchmarks(
+            test_signal_frame,
+            config.a_symbol,
+            config.h_symbol,
+            selected_strategy,
+            config.costs,
+        )
+
     result = PipelineResult(
         aligned_prices=loaded.aligned_prices,
         prices=prices,
@@ -1156,6 +1271,8 @@ def run_ah_relative_value_pipeline(
         benchmark_comparison=benchmark_comparison,
         rolling_sharpe=test_rolling_sharpe,
         rolling_beta=test_rolling_beta,
+        ou_params=ou_params,
+        weight_benchmarks=weight_benchmarks,
     )
     _save_outputs(config, result)
     return result
